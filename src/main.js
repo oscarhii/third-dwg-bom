@@ -170,7 +170,12 @@ function applyFilter() {
 }
 
 function renderTabs() {
-  ui.fileTabs.innerHTML = jobs.map((job, index) => `<button class="file-tab ${index === activeIndex ? 'active' : ''} ${job.status}" data-tab="${index}"><i>${job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '•'}</i><span>${escapeHtml(baseName(job.file.name))}</span></button>`).join('');
+  const nameCounts = new Map();
+  jobs.forEach((job) => { const key = job.file.name.toLocaleLowerCase(); nameCounts.set(key, (nameCounts.get(key) || 0) + 1); });
+  ui.fileTabs.innerHTML = jobs.map((job, index) => {
+    const duplicateName = nameCounts.get(job.file.name.toLocaleLowerCase()) > 1;
+    return `<div class="file-tab ${index === activeIndex ? 'active' : ''} ${job.status} ${duplicateName ? 'duplicate-name' : ''}" data-tab="${index}" role="tab" title="${duplicateName ? '檔名重複：' : ''}${escapeHtml(job.file.name)}"><i>${job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '•'}</i><span>${escapeHtml(baseName(job.file.name))}</span><button type="button" class="remove-tab" data-remove="${index}" title="移除此檔案" aria-label="移除 ${escapeHtml(job.file.name)}">×</button></div>`;
+  }).join('');
 }
 
 function renderData() {
@@ -260,7 +265,20 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ['dragenter', 'dragover'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
-ui.fileTabs.addEventListener('click', (event) => { const tab = event.target.closest('[data-tab]'); if (tab) { activeIndex = Number(tab.dataset.tab); ui.itemFilter.value = ''; render(); } });
+ui.fileTabs.addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove]');
+  if (remove) {
+    event.stopPropagation();
+    const removeIndex = Number(remove.dataset.remove);
+    jobs.splice(removeIndex, 1);
+    if (!jobs.length) activeIndex = 0;
+    else if (removeIndex < activeIndex) activeIndex -= 1;
+    else if (removeIndex === activeIndex) activeIndex = Math.min(removeIndex, jobs.length - 1);
+    ui.itemFilter.value = ''; render(); return;
+  }
+  const tab = event.target.closest('[data-tab]');
+  if (tab) { activeIndex = Number(tab.dataset.tab); ui.itemFilter.value = ''; render(); }
+});
 ui.checkList.addEventListener('change', (event) => { const input = event.target.closest('[data-row]'); if (!input) return; currentJob().rows[Number(input.dataset.row)].checks[Number(input.dataset.check)].selected = input.checked; updateTotal(); });
 ui.editButton.addEventListener('click', () => { const job = currentJob(); if (!job?.rows) return; job.editing = !job.editing; renderData(); });
 ui.dataView.addEventListener('change', (event) => {
