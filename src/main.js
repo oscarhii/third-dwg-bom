@@ -7,8 +7,8 @@ const ui = {
   dropzone: $('#dropzone'), fileInput: $('#fileInput'), engineStatus: $('#engineStatus'),
   summary: $('#summary'), clearButton: $('#clearButton'), fileTabs: $('#fileTabs'),
   dataEmpty: $('#dataEmpty'), dataView: $('#dataView'), includeHeader: $('#includeHeader'),
-  csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
-  totalIn: $('#totalIn'), totalMm: $('#totalMm'), formula: $('#formula'), itemFilter: $('#itemFilter'),
+  editButton: $('#editButton'), csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
+  totalIn: $('#totalIn'), totalMm: $('#totalMm'), totalWarning: $('#totalWarning'), formula: $('#formula'), itemFilter: $('#itemFilter'),
   showAllButton: $('#showAllButton'), selectAllButton: $('#selectAllButton'),
   clearChecksButton: $('#clearChecksButton'), selectVisibleButton: $('#selectVisibleButton'),
   clearVisibleButton: $('#clearVisibleButton'), filterHint: $('#filterHint'), checkList: $('#checkList'),
@@ -92,18 +92,23 @@ function extractTable(database) {
   }
   rows.sort((a, b) => b.y - a.y);
   if (!rows.length) throw new Error('找到表頭，但沒有有效資料列');
-  return prepareRows(rows);
+  return rows.map((row) => ({ ...row, modifiedFields: [] }));
 }
 
 function prepareRows(rows) {
   const catalogItems = new Map();
+  const catalogCounts = new Map();
   rows.forEach((row) => {
     const key = cleanAlnum(row.catalog);
     if (!catalogItems.has(key)) catalogItems.set(key, new Set());
     catalogItems.get(key).add(row.item);
+    catalogCounts.set(key, (catalogCounts.get(key) || 0) + 1);
   });
   return rows.map((row) => {
-    const duplicateItems = [...(catalogItems.get(cleanAlnum(row.catalog)) || [])];
+    const catalogKey = cleanAlnum(row.catalog);
+    const duplicateItems = [...(catalogItems.get(catalogKey) || [])];
+    const duplicateCatalog = (catalogCounts.get(catalogKey) || 0) > 1;
+    const crossItemDuplicate = duplicateItems.length > 1;
     try {
       const parsed = parseCatalog(row.catalog);
       const firstIsTotal = parsed.values.length > 1 && parsed.values[0] === parsed.values.slice(1).reduce((sum, value) => sum + value, 0);
@@ -114,9 +119,9 @@ function prepareRows(rows) {
       } else {
         for (let copy = 1; copy <= row.qty; copy += 1) selectable.forEach((value, index) => checks.push({ value, label: row.qty > 1 ? `#${copy}-${index + 1}: ${value} in` : `${index + 1}: ${value} in`, selected: false, multiplier: 1 }));
       }
-      return { ...row, ...parsed, firstIsTotal, selectable, checks, duplicateItems, error: '' };
+      return { ...row, ...parsed, firstIsTotal, selectable, checks, duplicateItems, duplicateCatalog, crossItemDuplicate, error: '' };
     } catch (error) {
-      return { ...row, values: [], details: [], selectable: [], checks: [], duplicateItems, error: error.message };
+      return { ...row, values: [], details: [], selectable: [], checks: [], duplicateItems, duplicateCatalog, crossItemDuplicate, error: error.message };
     }
   });
 }
@@ -176,11 +181,18 @@ function renderData() {
   ui.dataView.hidden = !job;
   ui.csvButton.disabled = job?.status !== 'done';
   ui.zipButton.disabled = done === 0;
+  ui.editButton.disabled = job?.status !== 'done';
+  ui.editButton.textContent = job?.editing ? '完成編輯' : '編輯資料';
   if (!job) { ui.dataView.innerHTML = ''; return; }
   if (job.status === 'working' || job.status === 'queued') { ui.dataView.innerHTML = '<div class="loading-box"><span class="spinner"></span>正在讀取圖面…</div>'; return; }
   if (job.status === 'error') { ui.dataView.innerHTML = `<div class="error-box"><strong>解析失敗</strong><p>${escapeHtml(job.error)}</p></div>`; return; }
-  const rows = job.rows.map((row) => `<tr class="${row.duplicateItems.length > 1 || row.error ? 'warning-row' : ''}"><td>${escapeHtml(row.item)}</td><td>${row.qty}</td><td title="${escapeHtml(row.catalog)}">${escapeHtml(row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td></tr>`).join('');
-  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const rows = job.rows.map((row, index) => {
+    const modified = new Set(row.modifiedFields || []);
+    const cell = (field, value, type = 'text') => job.editing ? `<input class="cell-input ${modified.has(field) ? 'modified-cell' : ''}" data-edit-row="${index}" data-edit-field="${field}" type="${type}" value="${escapeHtml(value)}" ${type === 'number' ? 'min="1"' : ''}/>` : `<span class="${modified.has(field) ? 'modified-cell text-cell' : ''}">${escapeHtml(value)}</span>`;
+    const icons = `${row.duplicateCatalog ? '<span class="status-icon warning-icon" title="此 CATALOG NUMBER 在本檔案中重複">!</span>' : ''}${modified.size ? '<span class="status-icon modified-icon" title="此列含有手動修改的欄位">✎</span>' : ''}`;
+    return `<tr class="${row.crossItemDuplicate || row.error ? 'warning-row' : ''}"><td>${cell('item', row.item)}</td><td>${cell('qty', row.qty, 'number')}</td><td>${cell('catalog', row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td><td class="row-status">${icons}</td></tr>`;
+  }).join('');
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderChecks() {
@@ -196,11 +208,12 @@ function renderChecks() {
   ui.checkList.innerHTML = visibleRows.map((row, rowIndex) => {
     if (row.error) return `<article class="item-card invalid"><div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>${escapeHtml(row.error)}</span></div></article>`;
     const originalIndex = job.rows.indexOf(row);
-    const duplicate = row.duplicateItems.length > 1 ? `<p class="duplicate">⚠ 相同 CATALOG 亦出現在 ITEM ${row.duplicateItems.filter((item) => item !== row.item).join(', ')}</p>` : '';
+    const duplicate = row.crossItemDuplicate ? `<p class="duplicate">⚠ 相同 CATALOG 亦出現在 ITEM ${row.duplicateItems.filter((item) => item !== row.item).join(', ')}</p>` : '';
+    const statusIcons = `<div class="card-status">${row.duplicateCatalog ? '<span class="status-icon warning-icon" title="此 CATALOG NUMBER 在本檔案中重複">!</span>' : ''}${row.modifiedFields?.length ? '<span class="status-icon modified-icon" title="此 ITEM 含有手動修改的欄位">✎</span>' : ''}</div>`;
     const totalNote = row.firstIsTotal ? `總長 ${row.values[0]} in 已略過｜` : '';
     const info = row.selectable.length === 1 ? `${totalNote}實際長度 1 個${row.qty > 1 ? `｜QTY ${row.qty} 同長度只計 1 次` : ''}` : `${totalNote}共 ${row.qty * row.selectable.length} 個可選長度`;
     const checks = row.checks.map((check, checkIndex) => `<label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>`).join('');
-    return `<article class="item-card"><div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
+    return `<article class="item-card ${row.crossItemDuplicate ? 'duplicate-card' : ''}">${statusIcons}<div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
   }).join('');
   updateTotal();
 }
@@ -210,6 +223,11 @@ function updateTotal() {
   const selected = job?.rows?.flatMap((row) => row.checks.filter((check) => check.selected).map((check) => ({ item: row.item, ...check }))) || [];
   const total = selected.reduce((sum, entry) => sum + entry.value * entry.multiplier, 0);
   ui.totalIn.textContent = fmt(total); ui.totalMm.textContent = fmt(total * 25.4);
+  const query = parseQuery();
+  const exceeded = [];
+  if (job?.rows && query.size) job.rows.forEach((row) => { const requested = query.get(row.item); if (requested && requested > row.qty) exceeded.push(`${row.item}×${requested}（原 QTY ${row.qty}）`); });
+  ui.totalWarning.hidden = exceeded.length === 0;
+  ui.totalWarning.textContent = exceeded.length ? `注意：輸入數量超過 QTY：${exceeded.join('、')}` : '';
   if (!selected.length) { ui.formula.textContent = '尚未勾選'; return; }
   const grouped = new Map();
   selected.forEach((entry) => { if (!grouped.has(entry.item)) grouped.set(entry.item, []); grouped.get(entry.item).push(entry); });
@@ -224,7 +242,8 @@ async function processJob(job) {
     const [engine, buffer] = await Promise.all([getEngine(), job.file.arrayBuffer()]);
     pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
     if (!pointer) throw new Error('DWG 格式無法讀取');
-    job.rows = extractTable(engine.convert(pointer)); job.status = 'done';
+    job.rawRows = extractTable(engine.convert(pointer));
+    job.rows = prepareRows(job.rawRows); job.status = 'done'; job.editing = false;
   } catch (error) { console.error(error); job.status = 'error'; job.error = error instanceof Error ? error.message : '未知錯誤'; }
   finally { if (pointer) (await getEngine()).dwg_free(pointer); render(); }
 }
@@ -243,12 +262,24 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
 ui.fileTabs.addEventListener('click', (event) => { const tab = event.target.closest('[data-tab]'); if (tab) { activeIndex = Number(tab.dataset.tab); ui.itemFilter.value = ''; render(); } });
 ui.checkList.addEventListener('change', (event) => { const input = event.target.closest('[data-row]'); if (!input) return; currentJob().rows[Number(input.dataset.row)].checks[Number(input.dataset.check)].selected = input.checked; updateTotal(); });
+ui.editButton.addEventListener('click', () => { const job = currentJob(); if (!job?.rows) return; job.editing = !job.editing; renderData(); });
+ui.dataView.addEventListener('change', (event) => {
+  const input = event.target.closest('[data-edit-row]'); if (!input) return;
+  const job = currentJob(); const index = Number(input.dataset.editRow); const field = input.dataset.editField; let value = input.value.trim();
+  if (field === 'item') value = value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+  if (field === 'qty') value = Math.max(1, Number.parseInt(value, 10) || 1);
+  if (field === 'catalog') value = cleanAlnum(value);
+  job.rawRows[index][field] = value; const modified = new Set(job.rawRows[index].modifiedFields || []); modified.add(field); job.rawRows[index].modifiedFields = [...modified];
+  job.rows = prepareRows(job.rawRows); render();
+});
 ui.itemFilter.addEventListener('input', applyFilter);
 ui.showAllButton.addEventListener('click', () => { ui.itemFilter.value = ''; applyFilter(); ui.itemFilter.focus(); });
 function setVisible(value) { const job = currentJob(); if (!job?.rows) return; const query = parseQuery(); job.rows.filter((row) => !query.size || query.has(row.item)).forEach((row) => row.checks.forEach((check) => { check.selected = value; })); renderChecks(); }
 ui.selectVisibleButton.addEventListener('click', () => setVisible(true)); ui.clearVisibleButton.addEventListener('click', () => setVisible(false));
 ui.selectAllButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = true; })); renderChecks(); });
-ui.clearChecksButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = false; check.multiplier = 1; })); renderChecks(); });
+function clearAllChecks() { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = false; check.multiplier = 1; })); renderChecks(); }
+ui.clearChecksButton.addEventListener('click', clearAllChecks);
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { clearAllChecks(); ui.filterHint.textContent = '已按 Esc：全部取消並歸零'; } });
 ui.clearButton.addEventListener('click', () => { jobs.length = 0; activeIndex = 0; ui.itemFilter.value = ''; render(); });
 ui.csvButton.addEventListener('click', () => { const job = currentJob(); if (job?.status === 'done') downloadBlob(new Blob([makeCsv(job)], { type: 'text/csv;charset=utf-8' }), `${baseName(job.file.name)}.csv`); });
 ui.zipButton.addEventListener('click', async () => { const zip = new JSZip(); jobs.filter((job) => job.status === 'done').forEach((job) => zip.file(`${baseName(job.file.name)}.csv`, makeCsv(job))); ui.zipButton.disabled = true; ui.zipButton.textContent = '打包中…'; downloadBlob(await zip.generateAsync({ type: 'blob' }), `dwg-csv-${new Date().toISOString().slice(0, 10)}.zip`); ui.zipButton.textContent = '全部 ZIP'; ui.zipButton.disabled = false; });
