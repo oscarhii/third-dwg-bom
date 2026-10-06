@@ -8,13 +8,17 @@ const ui = {
   includeHeader: document.querySelector('#includeHeader'),
   engineStatus: document.querySelector('#engineStatus'),
   resultsSection: document.querySelector('#resultsSection'),
-  fileList: document.querySelector('#fileList'),
   summary: document.querySelector('#summary'),
   zipButton: document.querySelector('#zipButton'),
   clearButton: document.querySelector('#clearButton'),
+  emptyState: document.querySelector('#emptyState'),
+  resultContent: document.querySelector('#resultContent'),
+  fileTabs: document.querySelector('#fileTabs'),
+  activeResult: document.querySelector('#activeResult'),
 };
 
 const jobs = [];
+let activeIndex = 0;
 let enginePromise;
 
 function getEngine() {
@@ -135,25 +139,30 @@ function escapeHtml(value) {
 }
 
 function render() {
-  ui.resultsSection.hidden = jobs.length === 0;
   const success = jobs.filter((job) => job.status === 'done');
   const failed = jobs.filter((job) => job.status === 'error');
   const working = jobs.filter((job) => job.status === 'working' || job.status === 'queued');
+  ui.emptyState.hidden = jobs.length > 0;
+  ui.resultContent.hidden = jobs.length === 0;
   ui.summary.innerHTML = `<span>${jobs.length} 個檔案</span><i></i><span class="ok">${success.length} 完成</span>${failed.length ? `<i></i><span class="bad">${failed.length} 失敗</span>` : ''}${working.length ? `<i></i><span>${working.length} 處理中</span>` : ''}`;
   ui.zipButton.disabled = success.length === 0;
 
-  ui.fileList.innerHTML = jobs.map((job, index) => {
-    const icon = job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '<span class="mini-spinner"></span>';
-    const detail = job.status === 'done'
-      ? `<strong>${job.rows.length} 筆資料</strong><span>${job.csvName}</span>`
-      : job.status === 'error' ? `<strong>${escapeHtml(job.error)}</strong>` : `<strong>${job.status === 'queued' ? '等待處理' : '正在讀取圖面…'}</strong>`;
-    return `<article class="file-card ${job.status}">
-      <div class="status-icon">${icon}</div>
-      <div class="file-info"><h3 title="${escapeHtml(job.file.name)}">${escapeHtml(job.file.name)}</h3><p>${formatBytes(job.file.size)}</p></div>
-      <div class="file-detail">${detail}</div>
-      ${job.status === 'done' ? `<button class="download-button" data-download="${index}" aria-label="下載 ${escapeHtml(job.csvName)}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 19h14" /></svg><span>CSV</span></button>` : ''}
-    </article>`;
+  if (!jobs.length) return;
+  activeIndex = Math.min(activeIndex, jobs.length - 1);
+  ui.fileTabs.innerHTML = jobs.map((job, index) => {
+    const mark = job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '•';
+    return `<button type="button" role="tab" aria-selected="${index === activeIndex}" class="file-tab ${job.status} ${index === activeIndex ? 'active' : ''}" data-tab="${index}"><i>${mark}</i><span>${escapeHtml(baseName(job.file.name))}</span></button>`;
   }).join('');
+
+  const job = jobs[activeIndex];
+  if (job.status === 'done') {
+    const rows = job.rows.map((row) => `<tr><td>${escapeHtml(row.item)}</td><td>${row.qty}</td><td>${escapeHtml(row.catalog)}</td></tr>`).join('');
+    ui.activeResult.innerHTML = `<div class="active-meta"><div><h3>${escapeHtml(job.file.name)}</h3><p>${formatBytes(job.file.size)} ・ ${job.rows.length} 筆資料</p></div><button class="download-button wide" data-download="${activeIndex}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 19h14" /></svg><span>下載 CSV</span></button></div><div class="table-wrap"><table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  } else if (job.status === 'error') {
+    ui.activeResult.innerHTML = `<div class="result-message error-message"><strong>解析失敗</strong><p>${escapeHtml(job.error)}</p></div>`;
+  } else {
+    ui.activeResult.innerHTML = `<div class="result-message"><span class="spinner"></span><strong>${job.status === 'queued' ? '等待處理' : '正在讀取圖面…'}</strong></div>`;
+  }
 }
 
 async function processJob(job) {
@@ -183,8 +192,8 @@ async function addFiles(fileList) {
   const files = [...fileList].filter((file) => file.name.toLowerCase().endsWith('.dwg'));
   if (!files.length) return;
   for (const file of files) jobs.push({ file, status: 'queued' });
+  activeIndex = jobs.length - files.length;
   render();
-  ui.resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   for (const job of jobs.filter((entry) => entry.status === 'queued')) await processJob(job);
   ui.fileInput.value = '';
 }
@@ -200,7 +209,14 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
 
-ui.fileList.addEventListener('click', (event) => {
+ui.fileTabs.addEventListener('click', (event) => {
+  const tab = event.target.closest('[data-tab]');
+  if (!tab) return;
+  activeIndex = Number(tab.dataset.tab);
+  render();
+});
+
+ui.activeResult.addEventListener('click', (event) => {
   const button = event.target.closest('[data-download]');
   if (!button) return;
   const job = jobs[Number(button.dataset.download)];
@@ -220,6 +236,7 @@ ui.zipButton.addEventListener('click', async () => {
 
 ui.clearButton.addEventListener('click', () => {
   jobs.length = 0;
+  activeIndex = 0;
   render();
 });
 

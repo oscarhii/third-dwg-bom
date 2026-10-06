@@ -19,14 +19,13 @@
         <span class="privacy"><i></i> 本機處理・不上傳</span>
       </header>
 
-      <main>
-        <section class="hero">
-          <p class="eyebrow">DWG → STRUCTURED DATA</p>
-          <h1>把圖面的料表，<br /><em>乾淨地帶出來。</em></h1>
-          <p class="lede">批次讀取 DWG 中的 ITEM、QTY、CATALOG NUMBER 表格，直接產生對應 CSV。檔案只在你的瀏覽器中處理。</p>
-        </section>
-
-        <section class="workspace" aria-labelledby="upload-title">
+      <main class="app-layout">
+        <section class="workspace upload-panel" aria-labelledby="upload-title">
+          <div class="compact-intro">
+            <p class="eyebrow">DWG → STRUCTURED DATA</p>
+            <h1>圖面料表，<em>一鍵帶出。</em></h1>
+            <p class="lede">批次讀取 ITEM、QTY、CATALOG NUMBER，檔案全程只在瀏覽器本機處理。</p>
+          </div>
           <div class="workspace-head">
             <div>
               <span class="step">01</span>
@@ -35,7 +34,7 @@
             <label class="header-option"><input id="includeHeader" type="checkbox" /><span></span>CSV 包含欄位名稱</label>
           </div>
 
-          <label class="dropzone" id="dropzone" for="fileInput">
+          <label class="dropzone compact-dropzone" id="dropzone" for="fileInput">
             <input id="fileInput" type="file" accept=".dwg,application/acad,application/x-acad" multiple />
             <span class="upload-icon" aria-hidden="true">
               <svg viewBox="0 0 48 48"><path d="M24 32V10m0 0-8 8m8-8 8 8M10 31v5a3 3 0 0 0 3 3h22a3 3 0 0 0 3-3v-5" /></svg>
@@ -50,7 +49,7 @@
           </div>
         </section>
 
-        <section class="results" id="resultsSection" hidden aria-live="polite">
+        <section class="results result-panel" id="resultsSection" aria-live="polite">
           <div class="results-head">
             <div><span class="step">02</span><h2>轉換結果</h2></div>
             <div class="result-actions">
@@ -62,7 +61,15 @@
             </div>
           </div>
           <div class="summary" id="summary"></div>
-          <div class="file-list" id="fileList"></div>
+          <div class="empty-state" id="emptyState">
+            <span>02</span>
+            <h3>解析結果會顯示在這裡</h3>
+            <p>從左側加入一個或多個 DWG 檔案</p>
+          </div>
+          <div class="result-content" id="resultContent" hidden>
+            <div class="file-tabs" id="fileTabs" role="tablist"></div>
+            <div class="active-result" id="activeResult"></div>
+          </div>
         </section>
       </main>
 
