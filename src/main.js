@@ -2,19 +2,16 @@ import './style.css';
 import JSZip from 'jszip';
 import { Dwg_File_Type, LibreDwg } from '@mlightcad/libredwg-web';
 
+const $ = (selector) => document.querySelector(selector);
 const ui = {
-  dropzone: document.querySelector('#dropzone'),
-  fileInput: document.querySelector('#fileInput'),
-  includeHeader: document.querySelector('#includeHeader'),
-  engineStatus: document.querySelector('#engineStatus'),
-  resultsSection: document.querySelector('#resultsSection'),
-  summary: document.querySelector('#summary'),
-  zipButton: document.querySelector('#zipButton'),
-  clearButton: document.querySelector('#clearButton'),
-  emptyState: document.querySelector('#emptyState'),
-  resultContent: document.querySelector('#resultContent'),
-  fileTabs: document.querySelector('#fileTabs'),
-  activeResult: document.querySelector('#activeResult'),
+  dropzone: $('#dropzone'), fileInput: $('#fileInput'), engineStatus: $('#engineStatus'),
+  summary: $('#summary'), clearButton: $('#clearButton'), fileTabs: $('#fileTabs'),
+  dataEmpty: $('#dataEmpty'), dataView: $('#dataView'), includeHeader: $('#includeHeader'),
+  csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
+  totalIn: $('#totalIn'), totalMm: $('#totalMm'), formula: $('#formula'), itemFilter: $('#itemFilter'),
+  showAllButton: $('#showAllButton'), selectAllButton: $('#selectAllButton'),
+  clearChecksButton: $('#clearChecksButton'), selectVisibleButton: $('#selectVisibleButton'),
+  clearVisibleButton: $('#clearVisibleButton'), filterHint: $('#filterHint'), checkList: $('#checkList'),
 };
 
 const jobs = [];
@@ -25,34 +22,50 @@ function getEngine() {
   if (!enginePromise) {
     const wasmBase = new URL('.', window.location.href).href.replace(/\/$/, '');
     enginePromise = LibreDwg.create(wasmBase).then((engine) => {
-      ui.engineStatus.classList.add('ready');
-      ui.engineStatus.innerHTML = '<span class="ready-dot"></span><span>解析引擎已就緒</span>';
+      ui.engineStatus.innerHTML = '<i></i>解析引擎已就緒';
+      ui.engineStatus.className = 'engine-status ready';
       return engine;
     }).catch((error) => {
-      ui.engineStatus.classList.add('failed');
-      ui.engineStatus.textContent = '解析引擎載入失敗，請重新整理頁面。';
+      ui.engineStatus.textContent = '解析引擎載入失敗，請重新整理';
+      ui.engineStatus.className = 'engine-status failed';
       throw error;
     });
   }
   return enginePromise;
 }
 
-function plainText(value = '') {
-  return String(value)
-    .replace(/\\P/g, ' ')
-    .replace(/\\[A-Za-z][^;]*;/g, '')
-    .replace(/[{}]/g, '')
-    .trim();
+const cleanAlnum = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const plainText = (value) => String(value || '').replace(/\\P/g, ' ').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '').trim();
+const fmt = (value) => Math.abs(value - Math.round(value)) < 1e-9 ? String(Math.round(value)) : value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+const escapeHtml = (value) => { const node = document.createElement('span'); node.textContent = String(value); return node.innerHTML; };
+const baseName = (name) => name.replace(/\.dwg$/i, '');
+
+function parseCatalog(code) {
+  const normalized = cleanAlnum(code);
+  if (!normalized.startsWith('BFC')) {
+    if (/M\d{2}N$/.test(normalized)) return { values: [0], details: ['末端件→0'], body: normalized };
+    throw new Error('無法辨識型號格式');
+  }
+  if (!/M\d{2}N$/.test(normalized)) throw new Error('型號結尾需為 M + 兩位數字 + N');
+  const gPosition = normalized.indexOf('G');
+  if (gPosition < 0) throw new Error('型號中找不到 G');
+  const body = normalized.slice(gPosition + 1, -4);
+  const values = [];
+  const details = [];
+  for (const match of body.matchAll(/(\d+)([A-Z]?)/g)) {
+    const raw = Number(match[1]);
+    const letter = match[2];
+    const value = letter === 'S' && raw >= 1 && raw <= 10 ? raw * 12 : raw;
+    values.push(value);
+    details.push(`${match[1]}${letter}→${value}`);
+  }
+  return { values, details, body };
 }
 
 function collectTexts(database) {
   return database.entities.flatMap((entity) => {
-    if (entity.type === 'TEXT' && entity.startPoint) {
-      return [{ text: plainText(entity.text), x: entity.startPoint.x, y: entity.startPoint.y }];
-    }
-    if (entity.type === 'MTEXT' && entity.insertionPoint) {
-      return [{ text: plainText(entity.text), x: entity.insertionPoint.x, y: entity.insertionPoint.y }];
-    }
+    if (entity.type === 'TEXT' && entity.startPoint) return [{ text: plainText(entity.text), x: entity.startPoint.x, y: entity.startPoint.y }];
+    if (entity.type === 'MTEXT' && entity.insertionPoint) return [{ text: plainText(entity.text), x: entity.insertionPoint.x, y: entity.insertionPoint.y }];
     return [];
   }).filter((entry) => entry.text && Number.isFinite(entry.x) && Number.isFinite(entry.y));
 }
@@ -60,188 +73,185 @@ function collectTexts(database) {
 function extractTable(database) {
   const texts = collectTexts(database);
   let header;
-
   for (const item of texts.filter((cell) => cell.text.toUpperCase() === 'ITEM')) {
-    const qty = texts
-      .filter((cell) => cell.text.toUpperCase() === 'QTY' && Math.abs(cell.y - item.y) <= 1 && cell.x > item.x)
-      .sort((a, b) => a.x - b.x)[0];
+    const qty = texts.filter((cell) => cell.text.toUpperCase() === 'QTY' && Math.abs(cell.y - item.y) <= 1 && cell.x > item.x).sort((a, b) => a.x - b.x)[0];
     if (!qty) continue;
-    const catalog = texts
-      .filter((cell) => cell.text.toUpperCase().replace(/\s+/g, ' ') === 'CATALOG NUMBER' && Math.abs(cell.y - item.y) <= 1 && cell.x > qty.x)
-      .sort((a, b) => a.x - b.x)[0];
-    if (catalog) {
-      header = { item, qty, catalog };
-      break;
-    }
+    const catalog = texts.filter((cell) => cell.text.toUpperCase().replace(/\s+/g, ' ') === 'CATALOG NUMBER' && Math.abs(cell.y - item.y) <= 1 && cell.x > qty.x).sort((a, b) => a.x - b.x)[0];
+    if (catalog) { header = { item, qty, catalog }; break; }
   }
-
-  if (!header) throw new Error('找不到同一列的 ITEM、QTY、CATALOG NUMBER 表頭');
-
+  if (!header) throw new Error('找不到 ITEM、QTY、CATALOG NUMBER 表頭');
   const itemQtyBoundary = (header.item.x + header.qty.x) / 2;
   const qtyCatalogBoundary = (header.qty.x + header.catalog.x) / 2;
-  const tolerance = 1;
-  const catalogCells = texts.filter((cell) =>
-    cell.y < header.item.y - tolerance &&
-    cell.x >= qtyCatalogBoundary &&
-    /^[A-Za-z0-9][A-Za-z0-9._+/#-]{4,}$/.test(cell.text)
-  );
-
   const rows = [];
+  const catalogCells = texts.filter((cell) => cell.y < header.item.y - 1 && cell.x >= qtyCatalogBoundary && /^[A-Za-z0-9][A-Za-z0-9._+/#-]{4,}$/.test(cell.text));
   for (const catalog of catalogCells) {
-    const sameRow = texts.filter((cell) => Math.abs(cell.y - catalog.y) <= tolerance);
-    const qty = sameRow
-      .filter((cell) => cell.x >= itemQtyBoundary && cell.x < qtyCatalogBoundary && /^\d+$/.test(cell.text))
-      .sort((a, b) => Math.abs(a.x - header.qty.x) - Math.abs(b.x - header.qty.x))[0];
-    const item = sameRow
-      .filter((cell) => cell.x < itemQtyBoundary && /^[A-Za-z]+$/.test(cell.text))
-      .sort((a, b) => Math.abs(a.x - header.item.x) - Math.abs(b.x - header.item.x))[0];
-    if (item && qty) rows.push({ item: item.text, qty: Number(qty.text), catalog: catalog.text, y: catalog.y });
+    const sameRow = texts.filter((cell) => Math.abs(cell.y - catalog.y) <= 1);
+    const qty = sameRow.filter((cell) => cell.x >= itemQtyBoundary && cell.x < qtyCatalogBoundary && /^\d+$/.test(cell.text)).sort((a, b) => Math.abs(a.x - header.qty.x) - Math.abs(b.x - header.qty.x))[0];
+    const item = sameRow.filter((cell) => cell.x < itemQtyBoundary && /^[A-Za-z]+$/.test(cell.text)).sort((a, b) => Math.abs(a.x - header.item.x) - Math.abs(b.x - header.item.x))[0];
+    if (item && qty) rows.push({ item: item.text.toUpperCase(), qty: Number(qty.text), catalog: catalog.text, y: catalog.y });
   }
-
   rows.sort((a, b) => b.y - a.y);
-  if (!rows.length) throw new Error('已找到表頭，但沒有有效的資料列');
-  return rows;
+  if (!rows.length) throw new Error('找到表頭，但沒有有效資料列');
+  return prepareRows(rows);
 }
 
-function csvField(value) {
-  const text = String(value);
-  return /[,"\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+function prepareRows(rows) {
+  const catalogItems = new Map();
+  rows.forEach((row) => {
+    const key = cleanAlnum(row.catalog);
+    if (!catalogItems.has(key)) catalogItems.set(key, new Set());
+    catalogItems.get(key).add(row.item);
+  });
+  return rows.map((row) => {
+    const duplicateItems = [...(catalogItems.get(cleanAlnum(row.catalog)) || [])];
+    try {
+      const parsed = parseCatalog(row.catalog);
+      const firstIsTotal = parsed.values.length > 1 && parsed.values[0] === parsed.values.slice(1).reduce((sum, value) => sum + value, 0);
+      const selectable = firstIsTotal ? parsed.values.slice(1) : [...parsed.values];
+      const checks = [];
+      if (selectable.length === 1) {
+        checks.push({ value: selectable[0], label: `${selectable[0]} in${row.qty > 1 ? `（原 QTY ${row.qty}，同長度只列 1 個）` : ''}`, selected: false, multiplier: 1 });
+      } else {
+        for (let copy = 1; copy <= row.qty; copy += 1) selectable.forEach((value, index) => checks.push({ value, label: row.qty > 1 ? `#${copy}-${index + 1}: ${value} in` : `${index + 1}: ${value} in`, selected: false, multiplier: 1 }));
+      }
+      return { ...row, ...parsed, firstIsTotal, selectable, checks, duplicateItems, error: '' };
+    } catch (error) {
+      return { ...row, values: [], details: [], selectable: [], checks: [], duplicateItems, error: error.message };
+    }
+  });
 }
 
-function makeCsv(rows) {
-  const lines = rows.map((row) => [row.item, row.qty, row.catalog].map(csvField).join(','));
+function csvField(value) { const text = String(value); return /[,"\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text; }
+function makeCsv(job) {
+  const lines = job.rows.map((row) => [row.item, row.qty, row.catalog].map(csvField).join(','));
   if (ui.includeHeader.checked) lines.unshift('ITEM,QTY,CATALOG NUMBER');
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
+function downloadBlob(blob, name) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+function currentJob() { return jobs[activeIndex]; }
 
-function baseName(fileName) {
-  return fileName.replace(/\.dwg$/i, '');
+function parseQuery() {
+  const normalized = ui.itemFilter.value.trim().toUpperCase().replace(/\s*\*\s*/g, '*');
+  const query = new Map();
+  normalized.split(/[,;\s]+/).filter(Boolean).forEach((token) => {
+    const match = token.match(/^([A-Z]{1,2})(?:\*(\d+))?$/);
+    if (match && Number(match[2] || 1) >= 1) query.set(match[1], Number(match[2] || 1));
+  });
+  return query;
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function downloadBlob(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function escapeHtml(value) {
-  const node = document.createElement('span');
-  node.textContent = value;
-  return node.innerHTML;
-}
-
-function render() {
-  const success = jobs.filter((job) => job.status === 'done');
-  const failed = jobs.filter((job) => job.status === 'error');
-  const working = jobs.filter((job) => job.status === 'working' || job.status === 'queued');
-  ui.emptyState.hidden = jobs.length > 0;
-  ui.resultContent.hidden = jobs.length === 0;
-  ui.summary.innerHTML = `<span>${jobs.length} 個檔案</span><i></i><span class="ok">${success.length} 完成</span>${failed.length ? `<i></i><span class="bad">${failed.length} 失敗</span>` : ''}${working.length ? `<i></i><span>${working.length} 處理中</span>` : ''}`;
-  ui.zipButton.disabled = success.length === 0;
-
-  if (!jobs.length) return;
-  activeIndex = Math.min(activeIndex, jobs.length - 1);
-  ui.fileTabs.innerHTML = jobs.map((job, index) => {
-    const mark = job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '•';
-    return `<button type="button" role="tab" aria-selected="${index === activeIndex}" class="file-tab ${job.status} ${index === activeIndex ? 'active' : ''}" data-tab="${index}"><i>${mark}</i><span>${escapeHtml(baseName(job.file.name))}</span></button>`;
-  }).join('');
-
-  const job = jobs[activeIndex];
-  if (job.status === 'done') {
-    const rows = job.rows.map((row) => `<tr><td>${escapeHtml(row.item)}</td><td>${row.qty}</td><td>${escapeHtml(row.catalog)}</td></tr>`).join('');
-    ui.activeResult.innerHTML = `<div class="active-meta"><div><h3>${escapeHtml(job.file.name)}</h3><p>${formatBytes(job.file.size)} ・ ${job.rows.length} 筆資料</p></div><button class="download-button wide" data-download="${activeIndex}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 19h14" /></svg><span>下載 CSV</span></button></div><div class="table-wrap"><table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  } else if (job.status === 'error') {
-    ui.activeResult.innerHTML = `<div class="result-message error-message"><strong>解析失敗</strong><p>${escapeHtml(job.error)}</p></div>`;
+function applyFilter() {
+  const job = currentJob();
+  if (!job?.rows) return renderChecks();
+  const query = parseQuery();
+  if (!query.size) {
+    job.rows.forEach((row) => row.checks.forEach((check) => { check.multiplier = 1; }));
+    ui.filterHint.textContent = `顯示全部，共 ${new Set(job.rows.map((row) => row.item)).size} 個 ITEM`;
   } else {
-    ui.activeResult.innerHTML = `<div class="result-message"><span class="spinner"></span><strong>${job.status === 'queued' ? '等待處理' : '正在讀取圖面…'}</strong></div>`;
+    const available = new Set(job.rows.map((row) => row.item));
+    const missing = [...query.keys()].filter((item) => !available.has(item));
+    const ignored = [];
+    job.rows.forEach((row) => {
+      if (!query.has(row.item)) return;
+      if (row.selectable.length === 1) row.checks.forEach((check) => { check.multiplier = query.get(row.item); check.selected = true; });
+      else if (query.get(row.item) > 1) ignored.push(`${row.item}×${query.get(row.item)}`);
+    });
+    let message = `顯示：${[...query].map(([item, value]) => value > 1 ? `${item}×${value}` : item).join(', ')}`;
+    if (missing.length) message += ` ｜ 找不到：${missing.join(', ')}`;
+    if (ignored.length) message += ` ｜ 多長度不套用乘數：${ignored.join(', ')}`;
+    ui.filterHint.textContent = message;
   }
+  renderChecks();
 }
+
+function renderTabs() {
+  ui.fileTabs.innerHTML = jobs.map((job, index) => `<button class="file-tab ${index === activeIndex ? 'active' : ''} ${job.status}" data-tab="${index}"><i>${job.status === 'done' ? '✓' : job.status === 'error' ? '!' : '•'}</i><span>${escapeHtml(baseName(job.file.name))}</span></button>`).join('');
+}
+
+function renderData() {
+  const job = currentJob();
+  const done = jobs.filter((entry) => entry.status === 'done').length;
+  ui.summary.textContent = jobs.length ? `${jobs.length} 個檔案・${done} 完成` : '尚未加入檔案';
+  ui.dataEmpty.hidden = Boolean(job);
+  ui.dataView.hidden = !job;
+  ui.csvButton.disabled = job?.status !== 'done';
+  ui.zipButton.disabled = done === 0;
+  if (!job) { ui.dataView.innerHTML = ''; return; }
+  if (job.status === 'working' || job.status === 'queued') { ui.dataView.innerHTML = '<div class="loading-box"><span class="spinner"></span>正在讀取圖面…</div>'; return; }
+  if (job.status === 'error') { ui.dataView.innerHTML = `<div class="error-box"><strong>解析失敗</strong><p>${escapeHtml(job.error)}</p></div>`; return; }
+  const rows = job.rows.map((row) => `<tr class="${row.duplicateItems.length > 1 || row.error ? 'warning-row' : ''}"><td>${escapeHtml(row.item)}</td><td>${row.qty}</td><td title="${escapeHtml(row.catalog)}">${escapeHtml(row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td></tr>`).join('');
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderChecks() {
+  const job = currentJob();
+  ui.activeFileLabel.textContent = job ? job.file.name : '請先加入 DWG';
+  if (!job || job.status !== 'done') {
+    ui.checkList.innerHTML = job?.status === 'error' ? `<div class="operation-empty error-box"><h3>此檔案無法建立選項</h3><p>${escapeHtml(job.error)}</p></div>` : '<div class="operation-empty"><span>✓</span><h3>等待圖面資料</h3><p>解析完成後會依 ITEM / QTY 產生可選長度</p></div>';
+    updateTotal(); return;
+  }
+  const query = parseQuery();
+  const visibleRows = query.size ? job.rows.filter((row) => query.has(row.item)) : job.rows;
+  if (!visibleRows.length) { ui.checkList.innerHTML = '<div class="operation-empty"><h3>找不到符合的 ITEM</h3></div>'; updateTotal(); return; }
+  ui.checkList.innerHTML = visibleRows.map((row, rowIndex) => {
+    if (row.error) return `<article class="item-card invalid"><div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>${escapeHtml(row.error)}</span></div></article>`;
+    const originalIndex = job.rows.indexOf(row);
+    const duplicate = row.duplicateItems.length > 1 ? `<p class="duplicate">⚠ 相同 CATALOG 亦出現在 ITEM ${row.duplicateItems.filter((item) => item !== row.item).join(', ')}</p>` : '';
+    const totalNote = row.firstIsTotal ? `總長 ${row.values[0]} in 已略過｜` : '';
+    const info = row.selectable.length === 1 ? `${totalNote}實際長度 1 個${row.qty > 1 ? `｜QTY ${row.qty} 同長度只計 1 次` : ''}` : `${totalNote}共 ${row.qty * row.selectable.length} 個可選長度`;
+    const checks = row.checks.map((check, checkIndex) => `<label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>`).join('');
+    return `<article class="item-card"><div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
+  }).join('');
+  updateTotal();
+}
+
+function updateTotal() {
+  const job = currentJob();
+  const selected = job?.rows?.flatMap((row) => row.checks.filter((check) => check.selected).map((check) => ({ item: row.item, ...check }))) || [];
+  const total = selected.reduce((sum, entry) => sum + entry.value * entry.multiplier, 0);
+  ui.totalIn.textContent = fmt(total); ui.totalMm.textContent = fmt(total * 25.4);
+  if (!selected.length) { ui.formula.textContent = '尚未勾選'; return; }
+  const grouped = new Map();
+  selected.forEach((entry) => { if (!grouped.has(entry.item)) grouped.set(entry.item, []); grouped.get(entry.item).push(entry); });
+  ui.formula.textContent = [...grouped].sort().map(([item, entries]) => `${item}: ${entries.map((entry) => entry.multiplier > 1 ? `${fmt(entry.value)}×${entry.multiplier}` : fmt(entry.value)).join(' + ')} = ${fmt(entries.reduce((sum, entry) => sum + entry.value * entry.multiplier, 0))} in`).join('  ｜  ');
+}
+
+function render() { activeIndex = Math.min(activeIndex, Math.max(0, jobs.length - 1)); renderTabs(); renderData(); renderChecks(); }
 
 async function processJob(job) {
-  job.status = 'working';
-  render();
-  let pointer;
+  job.status = 'working'; render(); let pointer;
   try {
     const [engine, buffer] = await Promise.all([getEngine(), job.file.arrayBuffer()]);
     pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
     if (!pointer) throw new Error('DWG 格式無法讀取');
-    const database = engine.convert(pointer);
-    job.rows = extractTable(database);
-    job.csvName = `${baseName(job.file.name)}.csv`;
-    job.csv = makeCsv(job.rows);
-    job.status = 'done';
-  } catch (error) {
-    console.error(error);
-    job.status = 'error';
-    job.error = error instanceof Error ? error.message : '未知錯誤';
-  } finally {
-    if (pointer) (await getEngine()).dwg_free(pointer);
-    render();
-  }
+    job.rows = extractTable(engine.convert(pointer)); job.status = 'done';
+  } catch (error) { console.error(error); job.status = 'error'; job.error = error instanceof Error ? error.message : '未知錯誤'; }
+  finally { if (pointer) (await getEngine()).dwg_free(pointer); render(); }
 }
 
 async function addFiles(fileList) {
   const files = [...fileList].filter((file) => file.name.toLowerCase().endsWith('.dwg'));
   if (!files.length) return;
-  for (const file of files) jobs.push({ file, status: 'queued' });
-  activeIndex = jobs.length - files.length;
-  render();
+  const start = jobs.length; files.forEach((file) => jobs.push({ file, status: 'queued' })); activeIndex = start; render();
   for (const job of jobs.filter((entry) => entry.status === 'queued')) await processJob(job);
   ui.fileInput.value = '';
 }
 
 ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
-['dragenter', 'dragover'].forEach((eventName) => ui.dropzone.addEventListener(eventName, (event) => {
-  event.preventDefault();
-  ui.dropzone.classList.add('dragging');
-}));
-['dragleave', 'drop'].forEach((eventName) => ui.dropzone.addEventListener(eventName, (event) => {
-  event.preventDefault();
-  ui.dropzone.classList.remove('dragging');
-}));
+['dragenter', 'dragover'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.add('dragging'); }));
+['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
+ui.fileTabs.addEventListener('click', (event) => { const tab = event.target.closest('[data-tab]'); if (tab) { activeIndex = Number(tab.dataset.tab); ui.itemFilter.value = ''; render(); } });
+ui.checkList.addEventListener('change', (event) => { const input = event.target.closest('[data-row]'); if (!input) return; currentJob().rows[Number(input.dataset.row)].checks[Number(input.dataset.check)].selected = input.checked; updateTotal(); });
+ui.itemFilter.addEventListener('input', applyFilter);
+ui.showAllButton.addEventListener('click', () => { ui.itemFilter.value = ''; applyFilter(); ui.itemFilter.focus(); });
+function setVisible(value) { const job = currentJob(); if (!job?.rows) return; const query = parseQuery(); job.rows.filter((row) => !query.size || query.has(row.item)).forEach((row) => row.checks.forEach((check) => { check.selected = value; })); renderChecks(); }
+ui.selectVisibleButton.addEventListener('click', () => setVisible(true)); ui.clearVisibleButton.addEventListener('click', () => setVisible(false));
+ui.selectAllButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = true; })); renderChecks(); });
+ui.clearChecksButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = false; check.multiplier = 1; })); renderChecks(); });
+ui.clearButton.addEventListener('click', () => { jobs.length = 0; activeIndex = 0; ui.itemFilter.value = ''; render(); });
+ui.csvButton.addEventListener('click', () => { const job = currentJob(); if (job?.status === 'done') downloadBlob(new Blob([makeCsv(job)], { type: 'text/csv;charset=utf-8' }), `${baseName(job.file.name)}.csv`); });
+ui.zipButton.addEventListener('click', async () => { const zip = new JSZip(); jobs.filter((job) => job.status === 'done').forEach((job) => zip.file(`${baseName(job.file.name)}.csv`, makeCsv(job))); ui.zipButton.disabled = true; ui.zipButton.textContent = '打包中…'; downloadBlob(await zip.generateAsync({ type: 'blob' }), `dwg-csv-${new Date().toISOString().slice(0, 10)}.zip`); ui.zipButton.textContent = '全部 ZIP'; ui.zipButton.disabled = false; });
+ui.includeHeader.addEventListener('change', renderData);
 
-ui.fileTabs.addEventListener('click', (event) => {
-  const tab = event.target.closest('[data-tab]');
-  if (!tab) return;
-  activeIndex = Number(tab.dataset.tab);
-  render();
-});
-
-ui.activeResult.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-download]');
-  if (!button) return;
-  const job = jobs[Number(button.dataset.download)];
-  downloadBlob(new Blob([job.csv], { type: 'text/csv;charset=utf-8' }), job.csvName);
-});
-
-ui.zipButton.addEventListener('click', async () => {
-  const zip = new JSZip();
-  jobs.filter((job) => job.status === 'done').forEach((job) => zip.file(job.csvName, job.csv));
-  ui.zipButton.disabled = true;
-  ui.zipButton.lastChild.textContent = ' 打包中…';
-  const blob = await zip.generateAsync({ type: 'blob' });
-  downloadBlob(blob, `dwg-csv-${new Date().toISOString().slice(0, 10)}.zip`);
-  ui.zipButton.lastChild.textContent = ' 下載全部 ZIP';
-  ui.zipButton.disabled = false;
-});
-
-ui.clearButton.addEventListener('click', () => {
-  jobs.length = 0;
-  activeIndex = 0;
-  render();
-});
-
-ui.includeHeader.addEventListener('change', () => {
-  jobs.filter((job) => job.status === 'done').forEach((job) => { job.csv = makeCsv(job.rows); });
-});
-
-getEngine();
+render(); getEngine();

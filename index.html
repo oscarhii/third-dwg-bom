@@ -3,80 +3,73 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="在瀏覽器中批次將 DWG 的 ITEM、QTY、CATALOG NUMBER 表格轉成 CSV。" />
-    <title>DWG BOM → CSV</title>
+    <meta name="description" content="從 DWG 讀取 BFC 料表，選取長度並自動加總。" />
+    <title>BFC DWG 長度加總工具</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <div class="shell">
+    <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="./" aria-label="回首頁">
-          <span class="brand-mark">D/C</span>
-          <span>DWG BOM 轉換器</span>
-        </a>
-        <span class="privacy"><i></i> 本機處理・不上傳</span>
+        <div class="brand"><span class="brand-mark">BFC</span><div><strong>DWG 長度加總</strong><small>ITEM CHECKBOX SUM</small></div></div>
+        <div class="privacy"><i></i>本機解析・檔案不上傳</div>
       </header>
 
-      <main class="app-layout">
-        <section class="workspace upload-panel" aria-labelledby="upload-title">
-          <div class="compact-intro">
-            <p class="eyebrow">DWG → STRUCTURED DATA</p>
-            <h1>圖面料表，<em>一鍵帶出。</em></h1>
-            <p class="lede">批次讀取 ITEM、QTY、CATALOG NUMBER，檔案全程只在瀏覽器本機處理。</p>
-          </div>
-          <div class="workspace-head">
-            <div>
-              <span class="step">01</span>
-              <h2 id="upload-title">加入 DWG 檔案</h2>
-            </div>
-            <label class="header-option"><input id="includeHeader" type="checkbox" /><span></span>CSV 包含欄位名稱</label>
-          </div>
-
-          <label class="dropzone compact-dropzone" id="dropzone" for="fileInput">
-            <input id="fileInput" type="file" accept=".dwg,application/acad,application/x-acad" multiple />
-            <span class="upload-icon" aria-hidden="true">
+      <main class="dashboard">
+        <div class="left-column">
+          <section class="panel upload-panel">
+            <div class="section-title"><span>01</span><div><h1>加入 DWG</h1><p>可一次選擇多個圖面</p></div></div>
+            <label class="dropzone" id="dropzone" for="fileInput">
+              <input id="fileInput" type="file" accept=".dwg" multiple />
               <svg viewBox="0 0 48 48"><path d="M24 32V10m0 0-8 8m8-8 8 8M10 31v5a3 3 0 0 0 3 3h22a3 3 0 0 0 3-3v-5" /></svg>
-            </span>
-            <strong>拖曳 DWG 到這裡</strong>
-            <span>或點擊選擇多個檔案</span>
-            <small>支援 AutoCAD DWG・可一次處理多檔</small>
-          </label>
+              <div><strong>拖曳或選擇 DWG</strong><small>支援批次處理</small></div>
+            </label>
+            <div class="engine-status" id="engineStatus"><span class="spinner"></span>正在準備解析引擎…</div>
+          </section>
 
-          <div class="engine-status" id="engineStatus">
-            <span class="spinner"></span><span>正在準備 DWG 解析引擎…</span>
-          </div>
-        </section>
-
-        <section class="results result-panel" id="resultsSection" aria-live="polite">
-          <div class="results-head">
-            <div><span class="step">02</span><h2>轉換結果</h2></div>
-            <div class="result-actions">
-              <button class="ghost-button" id="clearButton" type="button">清除全部</button>
-              <button class="primary-button" id="zipButton" type="button" disabled>
-                <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 19h14" /></svg>
-                下載全部 ZIP
-              </button>
+          <section class="panel data-panel">
+            <div class="panel-head">
+              <div class="section-title"><span>02</span><div><h2>資料檢視</h2><p id="summary">尚未加入檔案</p></div></div>
+              <button class="icon-button danger" id="clearButton" type="button" title="清除全部">×</button>
             </div>
-          </div>
-          <div class="summary" id="summary"></div>
-          <div class="empty-state" id="emptyState">
-            <span>02</span>
-            <h3>解析結果會顯示在這裡</h3>
-            <p>從左側加入一個或多個 DWG 檔案</p>
-          </div>
-          <div class="result-content" id="resultContent" hidden>
             <div class="file-tabs" id="fileTabs" role="tablist"></div>
-            <div class="active-result" id="activeResult"></div>
+            <div class="data-empty" id="dataEmpty">解析後的 ITEM、QTY 與型號會顯示在這裡</div>
+            <div class="data-view" id="dataView" hidden></div>
+            <div class="download-bar">
+              <label><input id="includeHeader" type="checkbox" /> CSV 表頭</label>
+              <button class="secondary-button" id="csvButton" type="button" disabled>下載 CSV</button>
+              <button class="primary-button" id="zipButton" type="button" disabled>全部 ZIP</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel operation-panel">
+          <div class="operation-head">
+            <div class="section-title"><span>03</span><div><h2>長度選取與加總</h2><p id="activeFileLabel">請先加入 DWG</p></div></div>
+            <div class="head-actions"><button id="selectAllButton" type="button">全選</button><button id="clearChecksButton" type="button">全部取消</button></div>
+          </div>
+
+          <div class="total-card">
+            <div><small>總長度</small><strong><span id="totalIn">0</span><em>in</em></strong></div>
+            <span class="multiply">× 25.4</span>
+            <div><small>換算毫米</small><strong><span id="totalMm">0</span><em>mm</em></strong></div>
+          </div>
+          <div class="formula" id="formula">尚未勾選</div>
+
+          <div class="filter-bar">
+            <div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="itemFilter" type="text" placeholder="搜尋 ITEM，例如 F*3 G H*2" /></div>
+            <button id="showAllButton" type="button">顯示全部</button>
+            <button id="selectVisibleButton" type="button">全選顯示</button>
+            <button id="clearVisibleButton" type="button">取消顯示</button>
+          </div>
+          <div class="filter-hint" id="filterHint">可輸入 F*3 G H*2；倍數只套用單一長度 ITEM</div>
+
+          <div class="check-list" id="checkList">
+            <div class="operation-empty"><span>✓</span><h3>等待圖面資料</h3><p>解析完成後會依 ITEM / QTY 產生可選長度</p></div>
           </div>
         </section>
       </main>
-
-      <footer>
-        <span>DWG BOM → CSV</span>
-        <span>Powered by <a href="https://github.com/mlightcad/libredwg-web" target="_blank" rel="noreferrer">LibreDWG Web</a> (GPL-3.0)</span>
-      </footer>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
