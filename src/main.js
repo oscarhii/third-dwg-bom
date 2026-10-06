@@ -350,6 +350,13 @@ ui.dataView.addEventListener('change', (event) => {
   job.editHistory.push({ type: 'edit', index, field, previous }); job.rawRows[index][field] = value; syncModifiedFields(job, index);
   job.rows = prepareRows(job.rawRows); render();
 });
+ui.dataView.addEventListener('wheel', (event) => {
+  const hasHorizontalOverflow = ui.dataView.scrollWidth > ui.dataView.clientWidth + 1;
+  if (!hasHorizontalOverflow || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  const before = ui.dataView.scrollLeft;
+  ui.dataView.scrollLeft += event.deltaY;
+  if (ui.dataView.scrollLeft !== before) event.preventDefault();
+}, { passive: false });
 ui.itemFilter.addEventListener('input', applyFilter);
 ui.showAllButton.addEventListener('click', () => { ui.itemFilter.value = ''; applyFilter(); ui.itemFilter.focus(); });
 function setVisible(value) { const job = currentJob(); if (!job?.rows) return; const query = parseQuery(); job.rows.filter((row) => !query.size || query.has(row.item)).forEach((row) => row.checks.forEach((check) => { if (!check.locked) check.selected = value; })); renderChecks(); }
