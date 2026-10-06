@@ -17,6 +17,7 @@ const ui = {
 const jobs = [];
 let activeIndex = 0;
 let enginePromise;
+let processingPromise = Promise.resolve();
 
 function getEngine() {
   if (!enginePromise) {
@@ -206,7 +207,13 @@ function renderData() {
     const icons = `${row.duplicateCatalog ? '<span class="status-icon warning-icon" title="此 CATALOG NUMBER 在本檔案中重複">!</span>' : ''}${modified.size ? '<span class="status-icon modified-icon" title="此列含有手動修改的欄位">✎</span>' : ''}`;
     return `<tr class="${row.crossItemDuplicate || row.error ? 'warning-row' : ''}"><td>${cell('item', row.item)}</td><td>${cell('qty', row.qty, 'number')}</td><td>${cell('catalog', row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td><td class="row-status">${icons}</td></tr>`;
   }).join('');
-  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  const catalogGroups = new Map();
+  job.rows.forEach((row) => {
+    const key = cleanAlnum(row.catalog); if (!catalogGroups.has(key)) catalogGroups.set(key, []); catalogGroups.get(key).push(row);
+  });
+  const duplicates = [...catalogGroups.values()].filter((group) => group.length > 1);
+  const duplicateNotice = duplicates.length ? `<div class="duplicate-summary"><strong>⚠ 發現相同 CATALOG NUMBER</strong><ul>${duplicates.map((group) => `<li><code>${escapeHtml(group[0].catalog)}</code><span>${group.length} 筆｜ITEM ${escapeHtml([...new Set(group.map((row) => row.item))].join(', '))}</span></li>`).join('')}</ul></div>` : '';
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${duplicateNotice}`;
 }
 
 function renderChecks() {
@@ -263,23 +270,37 @@ function updateTotal() {
 function render() { activeIndex = Math.min(activeIndex, Math.max(0, jobs.length - 1)); renderTabs(); renderData(); renderChecks(); }
 
 async function processJob(job) {
-  job.status = 'working'; render(); let pointer;
-  try {
-    const [engine, buffer] = await Promise.all([getEngine(), job.file.arrayBuffer()]);
-    pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
-    if (!pointer) throw new Error('DWG 格式無法讀取');
-    job.rawRows = extractTable(engine.convert(pointer)); job.originalRows = cloneRawRows(job.rawRows); job.editHistory = [];
-    job.rows = prepareRows(job.rawRows); job.status = 'done'; job.editing = false;
-  } catch (error) { console.error(error); job.status = 'error'; job.error = error instanceof Error ? error.message : '未知錯誤'; }
-  finally { if (pointer) (await getEngine()).dwg_free(pointer); render(); }
+  job.status = 'working'; render(); let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let pointer; let engine;
+    try {
+      const buffer = await job.file.arrayBuffer(); engine = await getEngine();
+      pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
+      if (!pointer) throw new Error('DWG 解析器回傳 null，檔案可能損壞或版本不相容');
+      job.rawRows = extractTable(engine.convert(pointer)); job.originalRows = cloneRawRows(job.rawRows); job.editHistory = [];
+      job.rows = prepareRows(job.rawRows); job.status = 'done'; job.editing = false; render(); return;
+    } catch (error) {
+      console.error(error); lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable = /null|memory|out of bounds|function signature|abort/i.test(message);
+      if (!retryable || attempt === 1) break;
+      enginePromise = undefined;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      if (pointer && engine) { try { engine.dwg_free(pointer); } catch (freeError) { console.warn(freeError); } }
+    }
+  }
+  job.status = 'error'; job.error = lastError instanceof Error ? lastError.message : '未知錯誤'; render();
 }
 
 async function addFiles(fileList) {
   const files = [...fileList].filter((file) => file.name.toLowerCase().endsWith('.dwg'));
   if (!files.length) return;
   const start = jobs.length; files.forEach((file) => jobs.push({ file, status: 'queued' })); activeIndex = start; render();
-  for (const job of jobs.filter((entry) => entry.status === 'queued')) await processJob(job);
-  ui.fileInput.value = '';
+  processingPromise = processingPromise.then(async () => {
+    let queued; while ((queued = jobs.find((entry) => entry.status === 'queued'))) await processJob(queued);
+  });
+  await processingPromise; ui.fileInput.value = '';
 }
 
 ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
