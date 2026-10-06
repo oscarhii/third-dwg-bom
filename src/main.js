@@ -7,7 +7,7 @@ const ui = {
   dropzone: $('#dropzone'), fileInput: $('#fileInput'), engineStatus: $('#engineStatus'),
   summary: $('#summary'), clearButton: $('#clearButton'), fileTabs: $('#fileTabs'),
   dataEmpty: $('#dataEmpty'), dataView: $('#dataView'), includeHeader: $('#includeHeader'),
-  editButton: $('#editButton'), csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
+  editButton: $('#editButton'), undoButton: $('#undoButton'), resetButton: $('#resetButton'), csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
   totalIn: $('#totalIn'), totalMm: $('#totalMm'), totalWarning: $('#totalWarning'), formula: $('#formula'), itemFilter: $('#itemFilter'),
   showAllButton: $('#showAllButton'), selectAllButton: $('#selectAllButton'),
   clearChecksButton: $('#clearChecksButton'), selectVisibleButton: $('#selectVisibleButton'),
@@ -135,6 +135,13 @@ function makeCsv(job) {
 function downloadBlob(blob, name) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function currentJob() { return jobs[activeIndex]; }
 
+function cloneRawRows(rows) { return rows.map((row) => ({ ...row, modifiedFields: [...(row.modifiedFields || [])] })); }
+function syncModifiedFields(job, index) {
+  const row = job.rawRows[index]; const original = job.originalRows[index];
+  row.modifiedFields = ['item', 'qty', 'catalog'].filter((field) => row[field] !== original[field]);
+}
+function hasModifications(job) { return Boolean(job?.rawRows?.some((row) => row.modifiedFields?.length)); }
+
 function parseQuery() {
   const normalized = ui.itemFilter.value.trim().toUpperCase().replace(/\s*\*\s*/g, '*');
   const query = new Map();
@@ -187,6 +194,8 @@ function renderData() {
   ui.csvButton.disabled = job?.status !== 'done';
   ui.zipButton.disabled = done === 0;
   ui.editButton.disabled = job?.status !== 'done';
+  ui.undoButton.disabled = job?.status !== 'done' || !job.editHistory?.length;
+  ui.resetButton.disabled = job?.status !== 'done' || !hasModifications(job);
   ui.editButton.textContent = job?.editing ? '完成編輯' : '編輯資料';
   if (!job) { ui.dataView.innerHTML = ''; return; }
   if (job.status === 'working' || job.status === 'queued') { ui.dataView.innerHTML = '<div class="loading-box"><span class="spinner"></span>正在讀取圖面…</div>'; return; }
@@ -259,7 +268,7 @@ async function processJob(job) {
     const [engine, buffer] = await Promise.all([getEngine(), job.file.arrayBuffer()]);
     pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
     if (!pointer) throw new Error('DWG 格式無法讀取');
-    job.rawRows = extractTable(engine.convert(pointer));
+    job.rawRows = extractTable(engine.convert(pointer)); job.originalRows = cloneRawRows(job.rawRows); job.editHistory = [];
     job.rows = prepareRows(job.rawRows); job.status = 'done'; job.editing = false;
   } catch (error) { console.error(error); job.status = 'error'; job.error = error instanceof Error ? error.message : '未知錯誤'; }
   finally { if (pointer) (await getEngine()).dwg_free(pointer); render(); }
@@ -299,13 +308,25 @@ ui.checkList.addEventListener('click', (event) => {
   renderChecks();
 });
 ui.editButton.addEventListener('click', () => { const job = currentJob(); if (!job?.rows) return; job.editing = !job.editing; renderData(); });
+ui.undoButton.addEventListener('click', () => {
+  const job = currentJob(); const action = job?.editHistory?.pop(); if (!action) return;
+  if (action.type === 'reset') job.rawRows = cloneRawRows(action.rows);
+  else { job.rawRows[action.index][action.field] = action.previous; syncModifiedFields(job, action.index); }
+  job.rows = prepareRows(job.rawRows); render();
+});
+ui.resetButton.addEventListener('click', () => {
+  const job = currentJob(); if (!job?.rows || !hasModifications(job)) return;
+  job.editHistory.push({ type: 'reset', rows: cloneRawRows(job.rawRows) });
+  job.rawRows = cloneRawRows(job.originalRows); job.rows = prepareRows(job.rawRows); render();
+});
 ui.dataView.addEventListener('change', (event) => {
   const input = event.target.closest('[data-edit-row]'); if (!input) return;
   const job = currentJob(); const index = Number(input.dataset.editRow); const field = input.dataset.editField; let value = input.value.trim();
   if (field === 'item') value = value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
   if (field === 'qty') value = Math.max(1, Number.parseInt(value, 10) || 1);
   if (field === 'catalog') value = cleanAlnum(value);
-  job.rawRows[index][field] = value; const modified = new Set(job.rawRows[index].modifiedFields || []); modified.add(field); job.rawRows[index].modifiedFields = [...modified];
+  const previous = job.rawRows[index][field]; if (value === previous) return;
+  job.editHistory.push({ type: 'edit', index, field, previous }); job.rawRows[index][field] = value; syncModifiedFields(job, index);
   job.rows = prepareRows(job.rawRows); render();
 });
 ui.itemFilter.addEventListener('input', applyFilter);
