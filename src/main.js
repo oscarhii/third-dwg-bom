@@ -218,8 +218,19 @@ function renderChecks() {
     const totalNote = row.firstIsTotal ? `總長 ${row.values[0]} in 已略過｜` : '';
     const info = row.selectable.length === 1 ? `${totalNote}實際長度 1 個${row.qty > 1 ? `｜QTY ${row.qty} 同長度只計 1 次` : ''}` : `${totalNote}共 ${row.qty * row.selectable.length} 個可選長度`;
     const isMultiLength = row.selectable.length > 1;
-    const checks = row.checks.map((check, checkIndex) => `<div class="length-choice ${check.locked ? 'locked' : ''}"><label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''} ${check.locked ? 'disabled' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>${isMultiLength ? `<button type="button" class="lock-button ${check.locked ? 'is-locked' : ''}" data-lock-row="${originalIndex}" data-lock-check="${checkIndex}" title="${check.locked ? '解除鎖定，恢復可選' : '鎖定此長度，排除本次加總'}" aria-label="${check.locked ? '解除鎖定' : '鎖定'}">${check.locked ? '🔒' : '🔓'}</button>` : ''}</div>`).join('');
-    return `<article class="item-card ${isMultiLength ? 'multi-length-card' : ''} ${row.crossItemDuplicate ? 'duplicate-card' : ''}">${statusIcons}<div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
+    const renderChoice = (check, checkIndex) => `<div class="length-choice ${check.locked ? 'locked' : ''}"><label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''} ${check.locked ? 'disabled' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>${isMultiLength ? `<button type="button" class="lock-button ${check.locked ? 'is-locked' : ''}" data-lock-row="${originalIndex}" data-lock-check="${checkIndex}" title="${check.locked ? '解除鎖定，恢復可選' : '鎖定此長度，排除本次加總'}" aria-label="${check.locked ? '解除鎖定' : '鎖定'}">${check.locked ? '🔒' : '🔓'}</button>` : ''}</div>`;
+    let checks;
+    if (isMultiLength && row.qty > 1) {
+      const perCopy = row.selectable.length;
+      checks = Array.from({ length: row.qty }, (_, copyIndex) => {
+        const start = copyIndex * perCopy;
+        const choices = row.checks.slice(start, start + perCopy).map((check, offset) => renderChoice(check, start + offset)).join('');
+        return `<div class="length-group"><span class="copy-label">#${copyIndex + 1}</span><div class="copy-choices">${choices}</div></div>`;
+      }).join('');
+    } else {
+      checks = row.checks.map(renderChoice).join('');
+    }
+    return `<article class="item-card ${isMultiLength ? 'multi-length-card' : ''} ${row.crossItemDuplicate ? 'duplicate-card' : ''}">${statusIcons}<div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options ${isMultiLength && row.qty > 1 ? 'grouped' : ''}">${checks}</div><p class="item-note">${info}</p></article>`;
   }).join('');
   updateTotal();
 }
