@@ -115,9 +115,9 @@ function prepareRows(rows) {
       const selectable = firstIsTotal ? parsed.values.slice(1) : [...parsed.values];
       const checks = [];
       if (selectable.length === 1) {
-        checks.push({ value: selectable[0], label: `${selectable[0]} in${row.qty > 1 ? `（原 QTY ${row.qty}，同長度只列 1 個）` : ''}`, selected: false, multiplier: 1 });
+        checks.push({ value: selectable[0], label: `${selectable[0]} in${row.qty > 1 ? `（原 QTY ${row.qty}，同長度只列 1 個）` : ''}`, selected: false, locked: false, multiplier: 1 });
       } else {
-        for (let copy = 1; copy <= row.qty; copy += 1) selectable.forEach((value, index) => checks.push({ value, label: row.qty > 1 ? `#${copy}-${index + 1}: ${value} in` : `${index + 1}: ${value} in`, selected: false, multiplier: 1 }));
+        for (let copy = 1; copy <= row.qty; copy += 1) selectable.forEach((value, index) => checks.push({ value, label: row.qty > 1 ? `#${copy}-${index + 1}: ${value} in` : `${index + 1}: ${value} in`, selected: false, locked: false, multiplier: 1 }));
       }
       return { ...row, ...parsed, firstIsTotal, selectable, checks, duplicateItems, duplicateCatalog, crossItemDuplicate, error: '' };
     } catch (error) {
@@ -217,8 +217,9 @@ function renderChecks() {
     const statusIcons = `<div class="card-status">${row.duplicateCatalog ? '<span class="status-icon warning-icon" title="此 CATALOG NUMBER 在本檔案中重複">!</span>' : ''}${row.modifiedFields?.length ? '<span class="status-icon modified-icon" title="此 ITEM 含有手動修改的欄位">✎</span>' : ''}</div>`;
     const totalNote = row.firstIsTotal ? `總長 ${row.values[0]} in 已略過｜` : '';
     const info = row.selectable.length === 1 ? `${totalNote}實際長度 1 個${row.qty > 1 ? `｜QTY ${row.qty} 同長度只計 1 次` : ''}` : `${totalNote}共 ${row.qty * row.selectable.length} 個可選長度`;
-    const checks = row.checks.map((check, checkIndex) => `<label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>`).join('');
-    return `<article class="item-card ${row.crossItemDuplicate ? 'duplicate-card' : ''}">${statusIcons}<div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
+    const isMultiLength = row.selectable.length > 1;
+    const checks = row.checks.map((check, checkIndex) => `<div class="length-choice ${check.locked ? 'locked' : ''}"><label class="length-check"><input type="checkbox" data-row="${originalIndex}" data-check="${checkIndex}" ${check.selected ? 'checked' : ''} ${check.locked ? 'disabled' : ''}/><span></span><b>${escapeHtml(check.label)}</b>${check.multiplier > 1 ? `<em>× ${check.multiplier} = ${fmt(check.value * check.multiplier)} in</em>` : ''}</label>${isMultiLength ? `<button type="button" class="lock-button ${check.locked ? 'is-locked' : ''}" data-lock-row="${originalIndex}" data-lock-check="${checkIndex}" title="${check.locked ? '解除鎖定，恢復可選' : '鎖定此長度，排除本次加總'}" aria-label="${check.locked ? '解除鎖定' : '鎖定'}">${check.locked ? '🔒' : '🔓'}</button>` : ''}</div>`).join('');
+    return `<article class="item-card ${isMultiLength ? 'multi-length-card' : ''} ${row.crossItemDuplicate ? 'duplicate-card' : ''}">${statusIcons}<div class="item-card-head"><strong>ITEM ${escapeHtml(row.item)}</strong><span>QTY ${row.qty}</span><code>${escapeHtml(row.catalog)}</code></div>${duplicate}<div class="length-options">${checks}</div><p class="item-note">${info}</p></article>`;
   }).join('');
   updateTotal();
 }
@@ -279,7 +280,13 @@ ui.fileTabs.addEventListener('click', (event) => {
   const tab = event.target.closest('[data-tab]');
   if (tab) { activeIndex = Number(tab.dataset.tab); ui.itemFilter.value = ''; render(); }
 });
-ui.checkList.addEventListener('change', (event) => { const input = event.target.closest('[data-row]'); if (!input) return; currentJob().rows[Number(input.dataset.row)].checks[Number(input.dataset.check)].selected = input.checked; updateTotal(); });
+ui.checkList.addEventListener('change', (event) => { const input = event.target.closest('[data-row]'); if (!input) return; const check = currentJob().rows[Number(input.dataset.row)].checks[Number(input.dataset.check)]; if (!check.locked) check.selected = input.checked; updateTotal(); });
+ui.checkList.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-lock-row]'); if (!button) return;
+  const check = currentJob().rows[Number(button.dataset.lockRow)].checks[Number(button.dataset.lockCheck)];
+  check.locked = !check.locked; if (check.locked) { check.selected = false; check.multiplier = 1; }
+  renderChecks();
+});
 ui.editButton.addEventListener('click', () => { const job = currentJob(); if (!job?.rows) return; job.editing = !job.editing; renderData(); });
 ui.dataView.addEventListener('change', (event) => {
   const input = event.target.closest('[data-edit-row]'); if (!input) return;
@@ -292,9 +299,9 @@ ui.dataView.addEventListener('change', (event) => {
 });
 ui.itemFilter.addEventListener('input', applyFilter);
 ui.showAllButton.addEventListener('click', () => { ui.itemFilter.value = ''; applyFilter(); ui.itemFilter.focus(); });
-function setVisible(value) { const job = currentJob(); if (!job?.rows) return; const query = parseQuery(); job.rows.filter((row) => !query.size || query.has(row.item)).forEach((row) => row.checks.forEach((check) => { check.selected = value; })); renderChecks(); }
+function setVisible(value) { const job = currentJob(); if (!job?.rows) return; const query = parseQuery(); job.rows.filter((row) => !query.size || query.has(row.item)).forEach((row) => row.checks.forEach((check) => { if (!check.locked) check.selected = value; })); renderChecks(); }
 ui.selectVisibleButton.addEventListener('click', () => setVisible(true)); ui.clearVisibleButton.addEventListener('click', () => setVisible(false));
-ui.selectAllButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = true; })); renderChecks(); });
+ui.selectAllButton.addEventListener('click', () => { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { if (!check.locked) check.selected = true; })); renderChecks(); });
 function clearAllChecks() { const job = currentJob(); job?.rows?.forEach((row) => row.checks.forEach((check) => { check.selected = false; check.multiplier = 1; })); renderChecks(); }
 ui.clearChecksButton.addEventListener('click', clearAllChecks);
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { clearAllChecks(); ui.filterHint.textContent = '已按 Esc：全部取消並歸零'; } });
