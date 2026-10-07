@@ -402,6 +402,17 @@ function renderTabs() {
   }).join('');
 }
 
+function materialLabelHtml(label) {
+  const match = String(label || '').match(/^(\S+)(.*)$/);
+  if (!match) return escapeHtml(label);
+  return `<span class="material-item-no">${escapeHtml(match[1])}</span><span class="material-length">${escapeHtml(match[2])}</span>`;
+}
+
+function materialFormulaHtml(formula) {
+  if (!formula || formula === '\u2014') return '\u2014';
+  return String(formula).split(' + ').map(materialLabelHtml).join('<span class="material-plus"> + </span>');
+}
+
 function renderDimensionAudit(job) {
   if (!job || job.status !== 'done') {
     ui.dimensionSummary.textContent = job ? '等待 DWG 解析完成' : '請先加入 DWG';
@@ -410,13 +421,20 @@ function renderDimensionAudit(job) {
   }
   const audits = job.dimensionAudits || [];
   ui.dimensionSummary.textContent = audits.length ? `${audits.length} 個尺寸｜${job.displayName || job.file.name}` : `未找到尺寸｜${job.displayName || job.file.name}`;
-  const rows = audits.map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td><td><button type="button" class="dimension-edit-button" data-dimension-edit="${index}">${job.manualDimensionIndex === index ? '收合' : '調整材料'}</button></td></tr>`).join('');
+  const dimensionQuery = String(job.dimensionSearch || '').trim().toLocaleLowerCase();
+  const rows = audits.map((audit, index) => {
+    const searchValue = `${audit.shownValue} ${fmt(audit.shownValue)} ${audit.shownValue}mm`.toLocaleLowerCase();
+    const hidden = dimensionQuery && !searchValue.includes(dimensionQuery);
+    return `<tr data-dimension-row data-search-value="${escapeHtml(searchValue)}" ${hidden ? 'hidden' : ''}><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '\u2014' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '\u2014' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${materialFormulaHtml(audit.formula)}</td><td><button type="button" class="dimension-edit-button" data-dimension-edit="${index}">${job.manualDimensionIndex === index ? '\u6536\u5408' : '\u8abf\u6574\u6750\u6599'}</button></td></tr>`;
+  }).join('');
   const usedBy = new Map(); audits.forEach((audit, auditIndex) => audit.tokenIds.forEach((id) => usedBy.set(id, auditIndex)));
   const unassigned = (job.materialTokens || []).filter((token) => !usedBy.has(token.id));
   const editorIndex = job.manualDimensionIndex; const editorAudit = Number.isInteger(editorIndex) ? audits[editorIndex] : null;
-  const editor = editorAudit ? `<div class="dimension-editor"><strong>調整 D${editorIndex + 1} 使用的材料</strong><p>勾選材料會自動從其他 Dimension 移除，確保每一段只使用一次。</p><div class="token-grid">${(job.materialTokens || []).map((token) => { const owner = usedBy.get(token.id); return `<label class="${owner != null && owner !== editorIndex ? 'used-elsewhere' : ''}"><input type="checkbox" data-dimension-token="${escapeHtml(token.id)}" data-dimension-index="${editorIndex}" ${editorAudit.tokenIds.includes(token.id) ? 'checked' : ''}/><span>${escapeHtml(token.label)}</span><small>${owner == null ? '未使用' : `D${owner + 1}`}</small></label>`; }).join('')}</div></div>` : '';
+  const materialQuery = String(job.materialSearch || '').trim().toLocaleLowerCase();
+  const editor = editorAudit ? `<div class="dimension-editor"><strong>\u8abf\u6574 D${editorIndex + 1} \u4f7f\u7528\u7684\u6750\u6599</strong><p>\u52fe\u9078\u6750\u6599\u6703\u81ea\u52d5\u5f9e\u5176\u4ed6 Dimension \u79fb\u9664\uff0c\u78ba\u4fdd\u6bcf\u4e00\u6bb5\u53ea\u4f7f\u7528\u4e00\u6b21\u3002</p><div class="dimension-search material-search"><span>\u641c\u5c0b\u6750\u6599</span><input type="search" data-material-search value="${escapeHtml(job.materialSearch || '')}" placeholder="\u4f8b\u5982\uff1aF\u300125\u3001F 25" /></div><div class="token-grid">${(job.materialTokens || []).map((token) => { const owner = usedBy.get(token.id); const searchValue = `${token.label} ${token.id}`.toLocaleLowerCase(); const hidden = materialQuery && !searchValue.includes(materialQuery); return `<label data-material-row data-search-value="${escapeHtml(searchValue)}" class="${owner != null && owner !== editorIndex ? 'used-elsewhere' : ''}" ${hidden ? 'hidden' : ''}><input type="checkbox" data-dimension-token="${escapeHtml(token.id)}" data-dimension-index="${editorIndex}" ${editorAudit.tokenIds.includes(token.id) ? 'checked' : ''}/><span class="material-label">${materialLabelHtml(token.label)}</span><small>${owner == null ? '\u672a\u4f7f\u7528' : `D${owner + 1}`}</small></label>`; }).join('')}</div><div class="search-no-results" data-material-empty ${materialQuery && !(job.materialTokens || []).some((token) => `${token.label} ${token.id}`.toLocaleLowerCase().includes(materialQuery)) ? '' : 'hidden'}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u6750\u6599</div></div>` : '';
   const unusedNotice = unassigned.length ? `<div class="unused-materials">⚠ 尚未使用：${escapeHtml(unassigned.map((token) => token.label).join('、'))}</div>` : '<div class="all-materials-used">✓ 每一段材料都已使用</div>';
-  ui.dimensionView.innerHTML = rows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th><th>手動</th></tr></thead><tbody>${rows}</tbody></table>${unusedNotice}${editor}` : '<div class="dimension-empty-state">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</div>';
+  const visibleCount = audits.filter((audit) => !dimensionQuery || `${audit.shownValue} ${fmt(audit.shownValue)} ${audit.shownValue}mm`.toLocaleLowerCase().includes(dimensionQuery)).length;
+  ui.dimensionView.innerHTML = rows ? `<div class="dimension-search dimension-length-search"><span>\u641c\u5c0b\u9577\u5ea6</span><input type="search" inputmode="decimal" data-dimension-search value="${escapeHtml(job.dimensionSearch || '')}" placeholder="\u4f8b\u5982\uff1a1016" /><small data-dimension-count>${visibleCount} / ${audits.length}</small></div><table><thead><tr><th>#</th><th>\u5716\u9762\u5c3a\u5bf8</th><th>\u7406\u8ad6\u5c3a\u5bf8</th><th>\u5dee\u7570</th><th>\u7d50\u679c</th><th>\u8a08\u7b97\u5f0f\uff08in\uff09</th><th>\u624b\u52d5</th></tr></thead><tbody>${rows}</tbody></table><div class="search-no-results" data-dimension-empty ${visibleCount ? 'hidden' : ''}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u5716\u9762\u9577\u5ea6</div>${unusedNotice}${editor}` : '<div class="dimension-empty-state">\u672a\u627e\u5230\u53ef\u9a57\u7b97\u7684\u539f\u751f\u6216 DIMS \u5716\u5c64\u70b8\u958b\u5c3a\u5bf8\u3002</div>';
 }
 
 function renderData() {
@@ -561,6 +579,20 @@ ui.dimensionView.addEventListener('change', (event) => {
   job.dimensionAudits.forEach((audit, auditIndex) => { if (auditIndex !== index) audit.tokenIds = audit.tokenIds.filter((id) => id !== tokenId); });
   const ids = new Set(job.dimensionAudits[index].tokenIds); if (input.checked) ids.add(tokenId); else ids.delete(tokenId);
   job.dimensionAudits = job.dimensionAudits.map((audit, auditIndex) => auditFromTokens(audit, job.materialTokens, auditIndex === index ? [...ids] : audit.tokenIds, true)); renderDimensionAudit(job);
+});
+ui.dimensionView.addEventListener('input', (event) => {
+  const job = currentJob(); if (!job) return;
+  if (event.target.matches('[data-dimension-search]')) {
+    job.dimensionSearch = event.target.value; const query = event.target.value.trim().toLocaleLowerCase(); let visible = 0;
+    ui.dimensionView.querySelectorAll('[data-dimension-row]').forEach((row) => { row.hidden = Boolean(query && !row.dataset.searchValue.includes(query)); if (!row.hidden) visible += 1; });
+    const count = ui.dimensionView.querySelector('[data-dimension-count]'); if (count) count.textContent = `${visible} / ${(job.dimensionAudits || []).length}`;
+    const empty = ui.dimensionView.querySelector('[data-dimension-empty]'); if (empty) empty.hidden = visible > 0;
+  }
+  if (event.target.matches('[data-material-search]')) {
+    job.materialSearch = event.target.value; const query = event.target.value.trim().toLocaleLowerCase(); let visible = 0;
+    ui.dimensionView.querySelectorAll('[data-material-row]').forEach((row) => { row.hidden = Boolean(query && !row.dataset.searchValue.includes(query)); if (!row.hidden) visible += 1; });
+    const empty = ui.dimensionView.querySelector('[data-material-empty]'); if (empty) empty.hidden = visible > 0;
+  }
 });
 ui.dimensionView.addEventListener('wheel', (event) => {
   const hasHorizontalOverflow = ui.dimensionView.scrollWidth > ui.dimensionView.clientWidth + 1;
