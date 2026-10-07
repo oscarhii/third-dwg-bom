@@ -20,6 +20,16 @@ let activeIndex = 0;
 let enginePromise;
 let processingPromise = Promise.resolve();
 
+function installHelpDialog() {
+  const brand = document.querySelector('.topbar .brand'); if (!brand || document.querySelector('#helpButton')) return;
+  const button = document.createElement('button'); button.id = 'helpButton'; button.type = 'button'; button.className = 'help-button'; button.textContent = '\uff1f \u4f7f\u7528\u8aaa\u660e'; brand.appendChild(button);
+  const dialog = document.createElement('dialog'); dialog.id = 'helpDialog'; dialog.className = 'help-dialog';
+  dialog.innerHTML = `<div class="help-head"><div><small>BFC DWG BOM</small><h2>\u5b8c\u6574\u4f7f\u7528\u8aaa\u660e</h2></div><button type="button" data-help-close aria-label="\u95dc\u9589">\u00d7</button></div><div class="help-content"><section><h3>1. \u4e0a\u50b3\u8207\u8cc7\u6599\u6aa2\u8996</h3><ol><li>\u5c07\u4e00\u500b\u6216\u591a\u500b DWG \u62d6\u9032\u4e0a\u50b3\u5340\uff0c\u6216\u9ede\u64ca\u9078\u64c7\u6a94\u6848\u3002</li><li>\u6bcf\u500b DWG/\u8868\u683c\u6703\u5efa\u7acb\u7368\u7acb\u5206\u9801\uff1b\u9ec3\u8272\u5206\u9801\u8868\u793a\u6a94\u540d\u91cd\u8907\u3002</li><li>\u8cc7\u6599\u6aa2\u8996\u53ef\u624b\u52d5\u7de8\u8f2f\u3001Undo \u8207 Reset\uff0c\u4e26\u53ef\u4e0b\u8f09 CSV \u6216\u5168\u90e8 ZIP\u3002</li></ol></section><section><h3>2. Dimension \u9577\u5ea6\u9a57\u7b97</h3><p>\u7cfb\u7d71\u8b80\u53d6\u539f\u751f Dimension\uff0c\u4e5f\u5617\u8a66\u5f9e DIMS \u5716\u5c64\u7684\u6578\u5b57 TEXT \u9084\u539f Explode \u5f8c\u7684\u5c3a\u5bf8\u3002\u518d\u5c07 Catalog Number \u89e3\u6790\u6210\u82f1\u540b\u6750\u6599\u6bb5\uff0c\u4ee5 25.4 \u8f49\u63db\u70ba mm\uff0c\u641c\u5c0b\u53ef\u80fd\u7d44\u5408\u4e26\u986f\u793a\u7406\u8ad6\u503c\u3001\u5dee\u7570\u8207\u8a08\u7b97\u5f0f\u3002</p><ul><li>LEM/LFM \u4f9d\u96d9\u65b9\u5411\u908f\u8f2f\u7522\u751f\u5169\u6bb5\u76f8\u540c\u9577\u5ea6\u3002</li><li>\u591a\u6bb5\u5f4e\u6298\u4ef6\u6703\u62c6\u6210 2\u20133 \u500b\u53ef\u5206\u914d\u6750\u6599\u6bb5\u3002</li><li>\u512a\u5148\u8b93\u6bcf\u6bb5\u6750\u6599\u53ea\u88ab\u4f7f\u7528\u4e00\u6b21\uff0c\u4e26\u4ee5\u5168\u5716\u6392\u9664\u6cd5\u5c0b\u627e\u7d44\u5408\u3002</li></ul></section><section><h3>3. \u641c\u5c0b\u8207\u624b\u52d5\u8abf\u6574</h3><ul><li>\u9577\u5ea6\u8207\u6750\u6599\u641c\u5c0b\u90fd\u652f\u63f4\u7a7a\u683c\u5206\u9694\u591a\u500b\u689d\u4ef6\uff0c\u4efb\u4e00\u689d\u4ef6\u7b26\u5408\u5373\u986f\u793a\u3002\u4f8b\u5982\uff1a<code>1016 2210</code> \u6216 <code>F 25 G</code>\u3002</li><li>\u5728\u641c\u5c0b\u6b04\u6309 Esc \u53ef\u7acb\u5373\u6e05\u9664\u3002</li><li>\u300c\u8abf\u6574\u6750\u6599\u300d\u53ef\u91cd\u65b0\u5206\u914d\u6750\u6599\uff1b\u52fe\u9078\u5f8c\u9ede\u9396\u982d\u53ef\u9396\u5b9a\uff0c\u907f\u514d\u88ab\u5176\u4ed6 Dimension \u79fb\u8d70\u3002\u9700\u5148\u89e3\u9396\u624d\u80fd\u53d6\u6d88\u6216\u91cd\u65b0\u5206\u914d\u3002</li></ul></section><section><h3>4. \u5224\u5b9a\u539f\u5247</h3><ul><li>\u5dee\u7570\u5f88\u5c0f\u3001\u56db\u6368\u4e94\u5165\u5f8c\u4e00\u81f4\u6216\u5728\u5bb9\u8a31\u7bc4\u570d\u5167\uff0c\u6703\u986f\u793a\u4e00\u81f4/\u63a5\u8fd1\u3002</li><li>\u76f4\u7acb\u6bb5\u8207\u4f4e\u4fe1\u5fc3\u5e7e\u4f55\u6703\u964d\u4f4e\u4f4d\u7f6e\u6b0a\u91cd\uff0c\u907f\u514d Explode \u5f8c\u7dda\u6bb5\u4e0d\u5b8c\u6574\u5c0e\u81f4\u8aa4\u6392\u9664\u3002</li><li>\u7d05\u8272\u6216\u9700\u6ce8\u610f\u7684\u7d50\u679c\u4ee3\u8868\u7cfb\u7d71\u7121\u6cd5\u5728\u76ee\u524d\u6750\u6599\u7d44\u5408\u4e2d\u53ef\u9760\u5c0d\u61c9\uff0c\u4e0d\u7b49\u65bc\u5716\u9762\u4e00\u5b9a\u932f\u8aa4\u3002</li></ul></section><section class="help-limit"><h3>5. \u5c40\u9650\u8207\u6ce8\u610f</h3><ul><li>\u672c\u5de5\u5177\u662f\u898f\u5247\u8207\u7d44\u5408\u63a8\u6f14\uff0c\u4e0d\u662f CAD \u5e7e\u4f55\u6c42\u89e3\u5668\uff0c\u7d50\u679c\u4ecd\u9700\u5de5\u7a0b\u4eba\u54e1\u78ba\u8a8d\u3002</li><li>\u5716\u5c64\u540d\u7a31\u3001\u8868\u683c\u6392\u7248\u3001Catalog Number \u683c\u5f0f\u6216 Explode \u65b9\u5f0f\u8207\u7bc4\u4f8b\u5dee\u7570\u592a\u5927\u6642\uff0c\u53ef\u80fd\u6f0f\u8b80\u6216\u8aa4\u914d\u3002</li><li>\u91cd\u8907\u7684\u5c3a\u5bf8\u6578\u5b57\u6703\u4fdd\u7559\u70ba\u7368\u7acb\u9805\u76ee\uff1b\u4f46\u82e5 DWG \u4e2d\u6578\u5b57\u672c\u8eab\u4e0d\u5728 DIMS \u5716\u5c64\u6216\u4e26\u975e\u7d14\u6578\u5b57\uff0c\u53ef\u80fd\u7121\u6cd5\u8fa8\u8b58\u3002</li><li>\u9396\u5b9a\u53ea\u5c0d\u7576\u524d\u5df2\u4e0a\u50b3\u7684\u9801\u9762\u968e\u6bb5\u6709\u6548\uff1b\u91cd\u65b0\u6574\u7406\u6216\u91cd\u65b0\u4e0a\u50b3\u5f8c\u9700\u91cd\u65b0\u8a2d\u5b9a\u3002</li><li>DWG \u5168\u90e8\u5728\u700f\u89bd\u5668\u5167\u89e3\u6790\uff0c\u5927\u6a94\u6216\u540c\u6642\u4e0a\u50b3\u592a\u591a\u6a94\u6848\u6703\u53d7\u96fb\u8166\u8a18\u61b6\u9ad4\u9650\u5236\u3002</li></ul></section></div><div class="help-foot"><button type="button" data-help-close>\u95dc\u9589</button></div>`;
+  document.body.appendChild(dialog); button.addEventListener('click', () => dialog.showModal()); dialog.addEventListener('click', (event) => { if (event.target === dialog || event.target.closest('[data-help-close]')) dialog.close(); });
+}
+
+installHelpDialog();
+
 function getEngine() {
   if (!enginePromise) {
     const wasmBase = new URL('../', window.location.href).href.replace(/\/$/, '');
@@ -402,6 +412,17 @@ function renderTabs() {
   }).join('');
 }
 
+function searchTerms(query) {
+  return String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function matchesSearch(value, query) {
+  const terms = searchTerms(query);
+  if (!terms.length) return true;
+  const haystack = String(value || '').toLocaleLowerCase();
+  return terms.some((term) => haystack.includes(term));
+}
+
 function materialLabelHtml(label) {
   const match = String(label || '').match(/^(\S+)(.*)$/);
   if (!match) return escapeHtml(label);
@@ -424,17 +445,18 @@ function renderDimensionAudit(job) {
   const dimensionQuery = String(job.dimensionSearch || '').trim().toLocaleLowerCase();
   const rows = audits.map((audit, index) => {
     const searchValue = `${audit.shownValue} ${fmt(audit.shownValue)} ${audit.shownValue}mm`.toLocaleLowerCase();
-    const hidden = dimensionQuery && !searchValue.includes(dimensionQuery);
+    const hidden = !matchesSearch(searchValue, dimensionQuery);
     return `<tr data-dimension-row data-search-value="${escapeHtml(searchValue)}" ${hidden ? 'hidden' : ''}><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '\u2014' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '\u2014' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${materialFormulaHtml(audit.formula)}</td><td><button type="button" class="dimension-edit-button" data-dimension-edit="${index}">${job.manualDimensionIndex === index ? '\u6536\u5408' : '\u8abf\u6574\u6750\u6599'}</button></td></tr>`;
   }).join('');
   const usedBy = new Map(); audits.forEach((audit, auditIndex) => audit.tokenIds.forEach((id) => usedBy.set(id, auditIndex)));
   const unassigned = (job.materialTokens || []).filter((token) => !usedBy.has(token.id));
   const editorIndex = job.manualDimensionIndex; const editorAudit = Number.isInteger(editorIndex) ? audits[editorIndex] : null;
+  const dimensionLocks = job.dimensionLocks ||= {};
   const materialQuery = String(job.materialSearch || '').trim().toLocaleLowerCase();
-  const editor = editorAudit ? `<div class="dimension-editor"><strong>\u8abf\u6574 D${editorIndex + 1} \u4f7f\u7528\u7684\u6750\u6599</strong><p>\u52fe\u9078\u6750\u6599\u6703\u81ea\u52d5\u5f9e\u5176\u4ed6 Dimension \u79fb\u9664\uff0c\u78ba\u4fdd\u6bcf\u4e00\u6bb5\u53ea\u4f7f\u7528\u4e00\u6b21\u3002</p><div class="dimension-search material-search"><span>\u641c\u5c0b\u6750\u6599</span><input type="search" data-material-search value="${escapeHtml(job.materialSearch || '')}" placeholder="\u4f8b\u5982\uff1aF\u300125\u3001F 25" /></div><div class="token-grid">${(job.materialTokens || []).map((token) => { const owner = usedBy.get(token.id); const searchValue = `${token.label} ${token.id}`.toLocaleLowerCase(); const hidden = materialQuery && !searchValue.includes(materialQuery); return `<label data-material-row data-search-value="${escapeHtml(searchValue)}" class="${owner != null && owner !== editorIndex ? 'used-elsewhere' : ''}" ${hidden ? 'hidden' : ''}><input type="checkbox" data-dimension-token="${escapeHtml(token.id)}" data-dimension-index="${editorIndex}" ${editorAudit.tokenIds.includes(token.id) ? 'checked' : ''}/><span class="material-label">${materialLabelHtml(token.label)}</span><small>${owner == null ? '\u672a\u4f7f\u7528' : `D${owner + 1}`}</small></label>`; }).join('')}</div><div class="search-no-results" data-material-empty ${materialQuery && !(job.materialTokens || []).some((token) => `${token.label} ${token.id}`.toLocaleLowerCase().includes(materialQuery)) ? '' : 'hidden'}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u6750\u6599</div></div>` : '';
+  const editor = editorAudit ? `<div class="dimension-editor"><strong>\u8abf\u6574 D${editorIndex + 1} \u4f7f\u7528\u7684\u6750\u6599</strong><p>\u52fe\u9078\u6750\u6599\u6703\u81ea\u52d5\u5f9e\u5176\u4ed6 Dimension \u79fb\u9664\u3002\u5df2\u9396\u5b9a\u7684\u6750\u6599\u4e0d\u6703\u88ab\u79fb\u8d70\uff0c\u9700\u5148\u89e3\u9396\u624d\u80fd\u8abf\u6574\u3002</p><div class="dimension-search material-search"><span>\u641c\u5c0b\u6750\u6599</span><input type="search" data-material-search value="${escapeHtml(job.materialSearch || '')}" placeholder="\u7a7a\u683c\u5206\u9694\uff1aF 25 G" title="\u591a\u500b\u689d\u4ef6\u4ee5\u7a7a\u683c\u5206\u9694\uff0cEsc \u6e05\u9664" /></div><div class="token-grid">${(job.materialTokens || []).map((token) => { const owner = usedBy.get(token.id); const locked = dimensionLocks[token.id] != null; const searchValue = `${token.label} ${token.id}`.toLocaleLowerCase(); const hidden = !matchesSearch(searchValue, materialQuery); return `<label data-material-row data-search-value="${escapeHtml(searchValue)}" class="${owner != null && owner !== editorIndex ? 'used-elsewhere' : ''} ${locked ? 'material-locked' : ''}" ${hidden ? 'hidden' : ''}><input type="checkbox" data-dimension-token="${escapeHtml(token.id)}" data-dimension-index="${editorIndex}" ${editorAudit.tokenIds.includes(token.id) ? 'checked' : ''} ${locked ? 'disabled' : ''}/><span class="material-label">${materialLabelHtml(token.label)}</span><small>${owner == null ? '\u672a\u4f7f\u7528' : `D${owner + 1}`}</small><button type="button" class="material-lock-button ${locked ? 'is-locked' : ''}" data-material-lock="${escapeHtml(token.id)}" data-lock-owner="${owner == null ? '' : owner}" ${owner == null ? 'disabled' : ''} title="${owner == null ? '\u5148\u52fe\u9078\u6750\u6599\u624d\u80fd\u9396\u5b9a' : locked ? '\u89e3\u9396\u6750\u6599' : '\u9396\u5b9a\u6750\u6599\uff0c\u9632\u6b62\u88ab\u79fb\u8d70'}">${locked ? '\ud83d\udd12' : '\ud83d\udd13'}</button></label>`; }).join('')}</div><div class="search-no-results" data-material-empty ${materialQuery && !(job.materialTokens || []).some((token) => matchesSearch(`${token.label} ${token.id}`, materialQuery)) ? '' : 'hidden'}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u6750\u6599</div></div>` : '';
   const unusedNotice = unassigned.length ? `<div class="unused-materials">⚠ 尚未使用：${escapeHtml(unassigned.map((token) => token.label).join('、'))}</div>` : '<div class="all-materials-used">✓ 每一段材料都已使用</div>';
-  const visibleCount = audits.filter((audit) => !dimensionQuery || `${audit.shownValue} ${fmt(audit.shownValue)} ${audit.shownValue}mm`.toLocaleLowerCase().includes(dimensionQuery)).length;
-  ui.dimensionView.innerHTML = rows ? `<div class="dimension-search dimension-length-search"><span>\u641c\u5c0b\u9577\u5ea6</span><input type="search" inputmode="decimal" data-dimension-search value="${escapeHtml(job.dimensionSearch || '')}" placeholder="\u4f8b\u5982\uff1a1016" /><small data-dimension-count>${visibleCount} / ${audits.length}</small></div><table><thead><tr><th>#</th><th>\u5716\u9762\u5c3a\u5bf8</th><th>\u7406\u8ad6\u5c3a\u5bf8</th><th>\u5dee\u7570</th><th>\u7d50\u679c</th><th>\u8a08\u7b97\u5f0f\uff08in\uff09</th><th>\u624b\u52d5</th></tr></thead><tbody>${rows}</tbody></table><div class="search-no-results" data-dimension-empty ${visibleCount ? 'hidden' : ''}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u5716\u9762\u9577\u5ea6</div>${unusedNotice}${editor}` : '<div class="dimension-empty-state">\u672a\u627e\u5230\u53ef\u9a57\u7b97\u7684\u539f\u751f\u6216 DIMS \u5716\u5c64\u70b8\u958b\u5c3a\u5bf8\u3002</div>';
+  const visibleCount = audits.filter((audit) => matchesSearch(`${audit.shownValue} ${fmt(audit.shownValue)} ${audit.shownValue}mm`, dimensionQuery)).length;
+  ui.dimensionView.innerHTML = rows ? `<div class="dimension-search dimension-length-search"><span>\u641c\u5c0b\u9577\u5ea6</span><input type="search" inputmode="decimal" data-dimension-search value="${escapeHtml(job.dimensionSearch || '')}" placeholder="\u7a7a\u683c\u5206\u9694\uff1a1016 2210" title="\u591a\u500b\u9577\u5ea6\u4ee5\u7a7a\u683c\u5206\u9694\uff0cEsc \u6e05\u9664" /><small data-dimension-count>${visibleCount} / ${audits.length}</small></div><table><thead><tr><th>#</th><th>\u5716\u9762\u5c3a\u5bf8</th><th>\u7406\u8ad6\u5c3a\u5bf8</th><th>\u5dee\u7570</th><th>\u7d50\u679c</th><th>\u8a08\u7b97\u5f0f\uff08in\uff09</th><th>\u624b\u52d5</th></tr></thead><tbody>${rows}</tbody></table><div class="search-no-results" data-dimension-empty ${visibleCount ? 'hidden' : ''}>\u627e\u4e0d\u5230\u7b26\u5408\u7684\u5716\u9762\u9577\u5ea6</div>${unusedNotice}${editor}` : '<div class="dimension-empty-state">\u672a\u627e\u5230\u53ef\u9a57\u7b97\u7684\u539f\u751f\u6216 DIMS \u5716\u5c64\u70b8\u958b\u5c3a\u5bf8\u3002</div>';
 }
 
 function renderData() {
@@ -571,11 +593,17 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
 ui.dimensionView.addEventListener('click', (event) => {
+  const lockButton = event.target.closest('[data-material-lock]');
+  if (lockButton) {
+    event.preventDefault(); event.stopPropagation(); const job = currentJob(); const tokenId = lockButton.dataset.materialLock; const owner = Number(lockButton.dataset.lockOwner);
+    if (!job || !Number.isInteger(owner)) return; const locks = job.dimensionLocks ||= {}; if (locks[tokenId] != null) delete locks[tokenId]; else locks[tokenId] = owner; renderDimensionAudit(job); return;
+  }
   const button = event.target.closest('[data-dimension-edit]'); if (!button) return; const job = currentJob(); const index = Number(button.dataset.dimensionEdit);
   job.manualDimensionIndex = job.manualDimensionIndex === index ? null : index; renderDimensionAudit(job);
 });
 ui.dimensionView.addEventListener('change', (event) => {
   const input = event.target.closest('[data-dimension-token]'); if (!input) return; const job = currentJob(); const index = Number(input.dataset.dimensionIndex); const tokenId = input.dataset.dimensionToken;
+  if (job.dimensionLocks?.[tokenId] != null) { renderDimensionAudit(job); return; }
   job.dimensionAudits.forEach((audit, auditIndex) => { if (auditIndex !== index) audit.tokenIds = audit.tokenIds.filter((id) => id !== tokenId); });
   const ids = new Set(job.dimensionAudits[index].tokenIds); if (input.checked) ids.add(tokenId); else ids.delete(tokenId);
   job.dimensionAudits = job.dimensionAudits.map((audit, auditIndex) => auditFromTokens(audit, job.materialTokens, auditIndex === index ? [...ids] : audit.tokenIds, true)); renderDimensionAudit(job);
@@ -584,15 +612,19 @@ ui.dimensionView.addEventListener('input', (event) => {
   const job = currentJob(); if (!job) return;
   if (event.target.matches('[data-dimension-search]')) {
     job.dimensionSearch = event.target.value; const query = event.target.value.trim().toLocaleLowerCase(); let visible = 0;
-    ui.dimensionView.querySelectorAll('[data-dimension-row]').forEach((row) => { row.hidden = Boolean(query && !row.dataset.searchValue.includes(query)); if (!row.hidden) visible += 1; });
+    ui.dimensionView.querySelectorAll('[data-dimension-row]').forEach((row) => { row.hidden = !matchesSearch(row.dataset.searchValue, query); if (!row.hidden) visible += 1; });
     const count = ui.dimensionView.querySelector('[data-dimension-count]'); if (count) count.textContent = `${visible} / ${(job.dimensionAudits || []).length}`;
     const empty = ui.dimensionView.querySelector('[data-dimension-empty]'); if (empty) empty.hidden = visible > 0;
   }
   if (event.target.matches('[data-material-search]')) {
     job.materialSearch = event.target.value; const query = event.target.value.trim().toLocaleLowerCase(); let visible = 0;
-    ui.dimensionView.querySelectorAll('[data-material-row]').forEach((row) => { row.hidden = Boolean(query && !row.dataset.searchValue.includes(query)); if (!row.hidden) visible += 1; });
+    ui.dimensionView.querySelectorAll('[data-material-row]').forEach((row) => { row.hidden = !matchesSearch(row.dataset.searchValue, query); if (!row.hidden) visible += 1; });
     const empty = ui.dimensionView.querySelector('[data-material-empty]'); if (empty) empty.hidden = visible > 0;
   }
+});
+ui.dimensionView.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !event.target.matches('[data-dimension-search], [data-material-search]')) return;
+  event.preventDefault(); event.stopPropagation(); event.target.value = ''; event.target.dispatchEvent(new Event('input', { bubbles: true }));
 });
 ui.dimensionView.addEventListener('wheel', (event) => {
   const hasHorizontalOverflow = ui.dimensionView.scrollWidth > ui.dimensionView.clientWidth + 1;
