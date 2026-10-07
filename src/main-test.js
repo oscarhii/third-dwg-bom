@@ -148,47 +148,78 @@ function collectExplodedDimensions(database) {
   return dimensions;
 }
 
+function materialLegs(catalog) {
+  const normalized = cleanAlnum(catalog); const square = normalized.match(/G(?:LEM|LFM)(\d+)/);
+  if (square) return [Number(square[1]), Number(square[1])];
+  try { const parsed = parseCatalog(normalized); const values = [...parsed.values]; return values.length > 1 && values[0] === values.slice(1).reduce((sum, value) => sum + value, 0) ? values.slice(1) : values; }
+  catch { return []; }
+}
+
+function auditFromTokens(dimension, tokens, tokenIds, manual = false) {
+  const assigned = tokenIds.map((id) => tokens.find((token) => token.id === id)).filter(Boolean);
+  const calculatedIn = assigned.reduce((sum, token) => sum + token.length, 0); const calculatedMm = calculatedIn * 25.4; const difference = calculatedMm - dimension.shownValue;
+  const verticalItems = new Set(['A', 'B', 'D', 'F', 'R', 'O', 'Q', 'P', 'L']); const vertical = assigned.length > 0 && assigned.every((token) => verticalItems.has(token.item));
+  const withinRound = Math.abs(difference) <= 1; const withinTolerance = Math.abs(difference) <= 10; let status; let level;
+  if (!assigned.length) { status = '尚未分配材料'; level = 'review'; }
+  else if (vertical) { status = withinTolerance ? '直立 ITEM：低信心一致' : '直立 ITEM：低信心差異'; level = 'review'; }
+  else if (withinRound) { status = manual ? '手動分配一致' : '全料排除後一致'; level = 'ok'; }
+  else if (withinTolerance) { status = manual ? '手動分配：±10 mm 內' : '全料排除：±10 mm 內'; level = 'tolerance'; }
+  else { status = manual ? '手動分配有差異' : '全料排除仍有差異'; level = 'bad'; }
+  return { ...dimension, calculatedMm, difference, formula: assigned.map((token) => token.label).join(' + ') || '—', status, level, vertical, tokenIds, manual };
+}
+
+function tokenDistancePenalty(token, dimension) {
+  const dx = dimension.p2.x - dimension.p1.x; const dy = dimension.p2.y - dimension.p1.y; const span = Math.hypot(dx, dy) || 1; const ux = dx / span; const uy = dy / span;
+  const bx = token.x - dimension.p1.x; const by = token.y - dimension.p1.y; const along = bx * ux + by * uy; const perpendicular = Math.abs(bx * uy - by * ux);
+  const outside = along < 0 ? -along : along > span ? along - span : 0;
+  return perpendicular / span + outside / span * 3;
+}
+
+function dimensionCandidates(tokens, dimension) {
+  const target = Math.max(0, Math.round(dimension.shownValue / 25.4)); const maxSum = target + 10; const perSum = 70;
+  let states = new Map([[0, [{ mask: 0n, ids: [], geometry: 0 }]]]);
+  tokens.forEach((token, index) => {
+    const bit = 1n << BigInt(index); const penalty = tokenDistancePenalty(token, dimension); const snapshot = [...states.entries()];
+    snapshot.forEach(([sum, list]) => { const nextSum = sum + token.length; if (nextSum > maxSum) return; const bucket = states.get(nextSum) || [];
+      list.forEach((state) => bucket.push({ mask: state.mask | bit, ids: [...state.ids, token.id], geometry: state.geometry + penalty }));
+      bucket.sort((a, b) => a.geometry - b.geometry); states.set(nextSum, bucket.slice(0, perSum));
+    });
+  });
+  const candidates = [];
+  states.forEach((list, sum) => { if (Math.abs(sum - target) > 10) return; list.forEach((state) => candidates.push({ ...state, sum, cost: Math.abs(sum - target) * 40 + state.geometry })); });
+  return candidates.sort((a, b) => a.cost - b.cost).slice(0, 140);
+}
+
+function solveDimensionAssignments(tokens, dimensions) {
+  const prepared = dimensions.map((dimension, index) => ({ index, dimension, candidates: dimensionCandidates(tokens, dimension) })).sort((a, b) => a.candidates.length - b.candidates.length);
+  let states = [{ mask: 0n, cost: 0, assignments: new Map() }];
+  prepared.forEach(({ index, candidates }) => {
+    const next = [];
+    states.forEach((state) => candidates.forEach((candidate) => { if ((state.mask & candidate.mask) !== 0n) return; const assignments = new Map(state.assignments); assignments.set(index, candidate.ids); next.push({ mask: state.mask | candidate.mask, cost: state.cost + candidate.cost, assignments }); }));
+    if (!next.length) return;
+    const bestByMask = new Map(); next.forEach((state) => { const key = state.mask.toString(); if (!bestByMask.has(key) || state.cost < bestByMask.get(key).cost) bestByMask.set(key, state); });
+    states = [...bestByMask.values()].sort((a, b) => a.cost - b.cost).slice(0, 5000);
+  });
+  const fullMask = tokens.length ? (1n << BigInt(tokens.length)) - 1n : 0n;
+  states.sort((a, b) => { const unusedA = (fullMask ^ (fullMask & a.mask)).toString(2).replace(/0/g, '').length; const unusedB = (fullMask ^ (fullMask & b.mask)).toString(2).replace(/0/g, '').length; return unusedA - unusedB || a.cost - b.cost; });
+  return states[0]?.assignments || new Map();
+}
+
 function collectDimensionAudits(database, tableMeta, crossBoxes) {
   const nativeDimensions = database.entities.filter((entity) => entity.type === 'DIMENSION' && entity.subclassMarker === 'AcDbAlignedDimension' && entity.subDefinitionPoint1 && entity.subDefinitionPoint2 && Number.isFinite(entity.measurement) && entity.measurement > 0);
-  const dimensions = [...nativeDimensions, ...collectExplodedDimensions(database)];
-  const audits = tableMeta.map(() => []);
-  dimensions.forEach((dimension) => {
-    const p1 = dimension.subDefinitionPoint1; const p2 = dimension.subDefinitionPoint2;
-    if (![p1.x, p1.y, p2.x, p2.y].every(Number.isFinite)) return;
-    const dx = p2.x - p1.x; const dy = p2.y - p1.y; const span = Math.hypot(dx, dy); if (!span) return;
-    const midX = (p1.x + p2.x) / 2; const midY = (p1.y + p2.y) / 2;
-    if (crossBoxes.some((box) => midX >= box.minX && midX <= box.maxX && midY >= box.minY && midY <= box.maxY)) return;
-    const tableChoice = tableMeta.map((meta, index) => ({ index, distance: Math.hypot(midX - meta.center.x, midY - meta.center.y) / Math.max(meta.table.header.span, 1) })).sort((a, b) => a.distance - b.distance)[0];
-    if (!tableChoice || tableChoice.distance > 35) return;
-    const meta = tableMeta[tableChoice.index]; const unitX = dx / span; const unitY = dy / span;
-    const typicalRadius = meta.balloons.length ? meta.balloons.map((balloon) => balloon.radius).sort((a, b) => a - b)[Math.floor(meta.balloons.length / 2)] : 1;
-    const corridor = Math.max(span * .4, typicalRadius * 3); const endTolerance = Math.max(span * .08, typicalRadius * 2);
-    const included = meta.balloons.filter((balloon) => {
-      const bx = balloon.x - p1.x; const by = balloon.y - p1.y; const along = bx * unitX + by * unitY; const perpendicular = Math.abs(bx * unitY - by * unitX);
-      return along >= -endTolerance && along <= span + endTolerance && perpendicular <= corridor;
-    });
-    const byItem = new Map();
-    included.forEach((balloon) => { const item = balloon.parsed.item; byItem.set(item, (byItem.get(item) || 0) + balloon.parsed.qty); });
-    const rowMap = new Map(meta.table.rows.map((row) => [row.item, row]));
-    const entries = [...byItem].filter(([item]) => rowMap.has(item)).map(([item, qty]) => ({ item, qty, catalog: rowMap.get(item).catalog }));
-    const shownValue = /^\s*\d+(?:\.\d+)?\s*$/.test(String(dimension.text || '')) ? Number(dimension.text) : Number(dimension.measurement);
-    const targetIn = shownValue / 25.4; const best = entries.length ? bestDimensionCombination(entries, targetIn) : null;
-    const calculatedMm = best ? best.total * 25.4 : 0; const difference = best ? calculatedMm - shownValue : null;
-    const verticalItems = new Set(['A', 'B', 'D', 'F', 'R', 'O', 'Q', 'P', 'L']);
-    const vertical = entries.length > 0 && entries.every((entry) => verticalItems.has(entry.item));
-    let status = '無法配對 ITEM'; let level = 'review';
-    if (best) {
-      const withinRound = Math.abs(difference) <= 1; const withinTolerance = Math.abs(difference) <= 10;
-      if (vertical) { status = withinTolerance ? '直立 ITEM：低信心一致' : '直立 ITEM：低信心差異'; level = 'review'; }
-      else if (best.ambiguous) { status = withinTolerance ? '推估一致' : '推估有差異'; level = withinTolerance ? 'estimate' : 'bad'; }
-      else if (withinRound) { status = '四捨五入後一致'; level = 'ok'; }
-      else if (withinTolerance) { status = '±10 mm 內'; level = 'tolerance'; }
-      else { status = '需要檢查'; level = 'bad'; }
-    }
-    audits[tableChoice.index].push({ shownValue, calculatedMm, difference, formula: best?.formula.join(' + ') || '—', status, level, vertical, ambiguous: best?.ambiguous || false });
+  const rawDimensions = [...nativeDimensions, ...collectExplodedDimensions(database)]; const grouped = tableMeta.map(() => []);
+  rawDimensions.forEach((entity) => {
+    const p1 = entity.subDefinitionPoint1; const p2 = entity.subDefinitionPoint2; if (![p1.x,p1.y,p2.x,p2.y].every(Number.isFinite)) return;
+    const midX=(p1.x+p2.x)/2,midY=(p1.y+p2.y)/2;if(crossBoxes.some((box)=>midX>=box.minX&&midX<=box.maxX&&midY>=box.minY&&midY<=box.maxY))return;
+    const choice=tableMeta.map((meta,index)=>({index,distance:Math.hypot(midX-meta.center.x,midY-meta.center.y)/Math.max(meta.table.header.span,1)})).sort((a,b)=>a.distance-b.distance)[0];if(!choice||choice.distance>35)return;
+    const shownValue=/^\s*\d+(?:\.\d+)?\s*$/.test(String(entity.text||''))?Number(entity.text):Number(entity.measurement); grouped[choice.index].push({shownValue,p1,p2,exploded:Boolean(entity.exploded)});
   });
-  audits.forEach((list) => list.sort((a, b) => a.shownValue - b.shownValue));
-  return audits;
+  return tableMeta.map((meta,tableIndex)=>{
+    const rowMap=new Map(meta.table.rows.map((row)=>[row.item,row]));const tokens=[];
+    meta.balloons.forEach((balloon,balloonIndex)=>{const row=rowMap.get(balloon.parsed.item);if(!row)return;const legs=materialLegs(row.catalog);for(let copy=0;copy<balloon.parsed.qty;copy+=1)legs.forEach((length,legIndex)=>tokens.push({id:`${balloonIndex}-${copy}-${legIndex}`,item:balloon.parsed.item,length,label:`${balloon.parsed.item} ${length}`,x:balloon.x,y:balloon.y,catalog:row.catalog}));});
+    const dimensions=grouped[tableIndex].sort((a,b)=>a.shownValue-b.shownValue);const assignments=solveDimensionAssignments(tokens,dimensions);const audits=dimensions.map((dimension,index)=>auditFromTokens(dimension,tokens,assignments.get(index)||[]));
+    return {audits,tokens};
+  });
 }
 
 function collectSegments(database) {
@@ -273,8 +304,8 @@ function extractTables(database) {
     if (!balloon.parsed) selected.meta.unreadable.push(balloon.raw || '(空白)');
     else { selected.meta.counts[balloon.parsed.item] = (selected.meta.counts[balloon.parsed.item] || 0) + balloon.parsed.qty; selected.meta.balloons.push(balloon); }
   });
-  const dimensionAudits = collectDimensionAudits(database, tableMeta, crossBoxes);
-  const auditedTables = tableMeta.map(({ table, counts, unreadable }, index) => ({ ...table, audit: { counts, unreadable, dimensionAudits: dimensionAudits[index], balloonCount: Object.values(counts).reduce((sum, qty) => sum + qty, 0) } }));
+  const dimensionResults = collectDimensionAudits(database, tableMeta, crossBoxes);
+  const auditedTables = tableMeta.map(({ table, counts, unreadable }, index) => ({ ...table, audit: { counts, unreadable, dimensionAudits: dimensionResults[index].audits, materialTokens: dimensionResults[index].tokens, balloonCount: Object.values(counts).reduce((sum, qty) => sum + qty, 0) } }));
   return { tables: auditedTables, excludedCount: marked.length - valid.length, detectedCount: marked.length };
 }
 
@@ -376,8 +407,13 @@ function renderDimensionAudit(job) {
   }
   const audits = job.dimensionAudits || [];
   ui.dimensionSummary.textContent = audits.length ? `${audits.length} 個尺寸｜${job.displayName || job.file.name}` : `未找到尺寸｜${job.displayName || job.file.name}`;
-  const rows = audits.map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td></tr>`).join('');
-  ui.dimensionView.innerHTML = rows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="dimension-empty-state">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</div>';
+  const rows = audits.map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td><td><button type="button" class="dimension-edit-button" data-dimension-edit="${index}">${job.manualDimensionIndex === index ? '收合' : '調整材料'}</button></td></tr>`).join('');
+  const usedBy = new Map(); audits.forEach((audit, auditIndex) => audit.tokenIds.forEach((id) => usedBy.set(id, auditIndex)));
+  const unassigned = (job.materialTokens || []).filter((token) => !usedBy.has(token.id));
+  const editorIndex = job.manualDimensionIndex; const editorAudit = Number.isInteger(editorIndex) ? audits[editorIndex] : null;
+  const editor = editorAudit ? `<div class="dimension-editor"><strong>調整 D${editorIndex + 1} 使用的材料</strong><p>勾選材料會自動從其他 Dimension 移除，確保每一段只使用一次。</p><div class="token-grid">${(job.materialTokens || []).map((token) => { const owner = usedBy.get(token.id); return `<label class="${owner != null && owner !== editorIndex ? 'used-elsewhere' : ''}"><input type="checkbox" data-dimension-token="${escapeHtml(token.id)}" data-dimension-index="${editorIndex}" ${editorAudit.tokenIds.includes(token.id) ? 'checked' : ''}/><span>${escapeHtml(token.label)}</span><small>${owner == null ? '未使用' : `D${owner + 1}`}</small></label>`; }).join('')}</div></div>` : '';
+  const unusedNotice = unassigned.length ? `<div class="unused-materials">⚠ 尚未使用：${escapeHtml(unassigned.map((token) => token.label).join('、'))}</div>` : '<div class="all-materials-used">✓ 每一段材料都已使用</div>';
+  ui.dimensionView.innerHTML = rows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th><th>手動</th></tr></thead><tbody>${rows}</tbody></table>${unusedNotice}${editor}` : '<div class="dimension-empty-state">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</div>';
 }
 
 function renderData() {
@@ -485,7 +521,7 @@ async function processJob(job) {
       const parts = result.tables.map((table, index) => {
         const suffix = result.tables.length > 1 ? `_${String(index + 1).padStart(2, '0')}` : '';
         const rawRows = table.rows;
-        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount, drawingCounts: table.audit?.counts || {}, unreadableBalloons: table.audit?.unreadable || [], dimensionAudits: table.audit?.dimensionAudits || [] };
+        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount, drawingCounts: table.audit?.counts || {}, unreadableBalloons: table.audit?.unreadable || [], dimensionAudits: table.audit?.dimensionAudits || [], materialTokens: table.audit?.materialTokens || [], manualDimensionIndex: null };
       });
       if (sourceIndex >= 0) { jobs.splice(sourceIndex, 1, ...parts); if (activeIndex === sourceIndex) activeIndex = sourceIndex; }
       render(); return;
@@ -513,6 +549,16 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ['dragenter', 'dragover'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
+ui.dimensionView.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-dimension-edit]'); if (!button) return; const job = currentJob(); const index = Number(button.dataset.dimensionEdit);
+  job.manualDimensionIndex = job.manualDimensionIndex === index ? null : index; renderDimensionAudit(job);
+});
+ui.dimensionView.addEventListener('change', (event) => {
+  const input = event.target.closest('[data-dimension-token]'); if (!input) return; const job = currentJob(); const index = Number(input.dataset.dimensionIndex); const tokenId = input.dataset.dimensionToken;
+  job.dimensionAudits.forEach((audit, auditIndex) => { if (auditIndex !== index) audit.tokenIds = audit.tokenIds.filter((id) => id !== tokenId); });
+  const ids = new Set(job.dimensionAudits[index].tokenIds); if (input.checked) ids.add(tokenId); else ids.delete(tokenId);
+  job.dimensionAudits = job.dimensionAudits.map((audit, auditIndex) => auditFromTokens(audit, job.materialTokens, auditIndex === index ? [...ids] : audit.tokenIds, true)); renderDimensionAudit(job);
+});
 ui.dimensionView.addEventListener('wheel', (event) => {
   const hasHorizontalOverflow = ui.dimensionView.scrollWidth > ui.dimensionView.clientWidth + 1;
   if (!hasHorizontalOverflow || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
