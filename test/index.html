@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="從 DWG 讀取 BFC 料表，選取長度並自動加總。" />
+    <title>BFC DWG 多表格測試版</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">BFC</span><div><strong>DWG 多表格測試版</strong><small>MULTI-TABLE EXPERIMENT</small></div></div>
+        <div class="privacy"><i></i>本機解析・檔案不上傳</div>
+      </header>
+
+      <main class="dashboard">
+        <div class="left-column">
+          <section class="panel upload-panel">
+            <div class="section-title"><span>01</span><div><h1>加入 DWG</h1><p>可一次選擇多個圖面</p></div></div>
+            <label class="dropzone" id="dropzone" for="fileInput">
+              <input id="fileInput" type="file" accept=".dwg" multiple />
+              <svg viewBox="0 0 48 48"><path d="M24 32V10m0 0-8 8m8-8 8 8M10 31v5a3 3 0 0 0 3 3h22a3 3 0 0 0 3-3v-5" /></svg>
+              <div><strong>拖曳或選擇 DWG</strong><small>支援批次處理</small></div>
+            </label>
+            <div class="engine-status" id="engineStatus"><span class="spinner"></span>正在準備解析引擎…</div>
+          </section>
+
+          <section class="panel data-panel">
+            <div class="panel-head">
+              <div class="section-title"><span>02</span><div><h2>資料檢視</h2><p id="summary">尚未加入檔案</p></div></div>
+              <div class="data-actions"><button class="history-button" id="undoButton" type="button" title="撤銷上一筆修改" disabled>↶ <span>Undo</span></button><button class="history-button" id="resetButton" type="button" title="恢復此 DWG 的原始資料" disabled>↺ <span>Reset</span></button><button class="edit-button" id="editButton" type="button" disabled>編輯資料</button><button class="icon-button danger" id="clearButton" type="button" title="清除全部">×</button></div>
+            </div>
+            <div class="file-tabs" id="fileTabs" role="tablist"></div>
+            <div class="data-empty" id="dataEmpty">解析後的 ITEM、QTY 與型號會顯示在這裡</div>
+            <div class="data-view" id="dataView" hidden></div>
+            <div class="download-bar">
+              <label><input id="includeHeader" type="checkbox" /> CSV 表頭</label>
+              <button class="secondary-button" id="csvButton" type="button" disabled>下載 CSV</button>
+              <button class="primary-button" id="zipButton" type="button" disabled>全部 ZIP</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel operation-panel">
+          <div class="operation-head">
+            <div class="section-title"><span>03</span><div><h2>長度選取與加總</h2><p id="activeFileLabel">請先加入 DWG</p></div></div>
+            <div class="head-actions"><button id="selectAllButton" type="button">全選</button><button id="clearChecksButton" type="button">全部取消</button></div>
+          </div>
+
+          <div class="total-card">
+            <div><small>總長度</small><strong><span id="totalIn">0</span><em>in</em></strong></div>
+            <span class="multiply">× 25.4</span>
+            <div><small>換算毫米</small><strong><span id="totalMm">0</span><em>mm</em></strong></div>
+          </div>
+          <div class="total-warning" id="totalWarning" hidden></div><div class="formula" id="formula">尚未勾選</div>
+
+          <div class="filter-bar">
+            <div class="search-wrap"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="itemFilter" type="text" placeholder="搜尋 ITEM，例如 F*3 G H*2" /></div>
+            <button id="showAllButton" type="button">顯示全部</button>
+            <button id="selectVisibleButton" type="button">全選顯示</button>
+            <button id="clearVisibleButton" type="button">取消顯示</button>
+          </div>
+          <div class="filter-hint" id="filterHint">可輸入 F*3 G H*2；倍數只套用單一長度 ITEM</div>
+
+          <div class="check-list" id="checkList">
+            <div class="operation-empty"><span>✓</span><h3>等待圖面資料</h3><p>解析完成後會依 ITEM / QTY 產生可選長度</p></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main-test.js"></script>
+  </body>
+</html>
