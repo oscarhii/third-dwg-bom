@@ -108,6 +108,68 @@ function tableCenter(table) {
   return { x: (Math.min(...points.map((point) => point.x)) + Math.max(...points.map((point) => point.x))) / 2, y: (Math.min(...points.map((point) => point.y)) + Math.max(...points.map((point) => point.y))) / 2 };
 }
 
+function catalogLengthOptions(catalog) {
+  const normalized = cleanAlnum(catalog);
+  const square = normalized.match(/G(?:LEM|LFM)(\d+)/);
+  if (square) return { options: [Number(square[1])], special: normalized.includes('LEM') ? 'LEM 雙方向' : 'LFM 雙方向', ambiguous: false };
+  try {
+    const parsed = parseCatalog(normalized); let options = [...parsed.values];
+    if (options.length > 1 && options[0] === options.slice(1).reduce((sum, value) => sum + value, 0)) options = options.slice(1);
+    return { options: [...new Set(options.filter((value) => value > 0))], special: '', ambiguous: options.length > 1 };
+  } catch { return { options: [], special: '', ambiguous: true }; }
+}
+
+function bestDimensionCombination(entries, targetIn) {
+  let states = [{ total: 0, formula: [], ambiguous: false }];
+  entries.forEach((entry) => {
+    const info = catalogLengthOptions(entry.catalog); const options = info.options.length ? info.options : [0];
+    const next = [];
+    states.forEach((state) => options.forEach((length) => next.push({ total: state.total + length * entry.qty, formula: [...state.formula, `${entry.item} ${length}${entry.qty > 1 ? `×${entry.qty}` : ''}${info.special ? ` (${info.special})` : ''}`], ambiguous: state.ambiguous || info.ambiguous || !info.options.length })));
+    states = next.sort((a, b) => Math.abs(a.total - targetIn) - Math.abs(b.total - targetIn)).slice(0, 500);
+  });
+  return states.sort((a, b) => Math.abs(a.total - targetIn) - Math.abs(b.total - targetIn))[0];
+}
+
+function collectDimensionAudits(database, tableMeta, crossBoxes) {
+  const dimensions = database.entities.filter((entity) => entity.type === 'DIMENSION' && entity.subclassMarker === 'AcDbAlignedDimension' && entity.subDefinitionPoint1 && entity.subDefinitionPoint2 && Number.isFinite(entity.measurement) && entity.measurement > 0);
+  const audits = tableMeta.map(() => []);
+  dimensions.forEach((dimension) => {
+    const p1 = dimension.subDefinitionPoint1; const p2 = dimension.subDefinitionPoint2;
+    if (![p1.x, p1.y, p2.x, p2.y].every(Number.isFinite)) return;
+    const dx = p2.x - p1.x; const dy = p2.y - p1.y; const span = Math.hypot(dx, dy); if (!span) return;
+    const midX = (p1.x + p2.x) / 2; const midY = (p1.y + p2.y) / 2;
+    if (crossBoxes.some((box) => midX >= box.minX && midX <= box.maxX && midY >= box.minY && midY <= box.maxY)) return;
+    const tableChoice = tableMeta.map((meta, index) => ({ index, distance: Math.hypot(midX - meta.center.x, midY - meta.center.y) / Math.max(meta.table.header.span, 1) })).sort((a, b) => a.distance - b.distance)[0];
+    if (!tableChoice || tableChoice.distance > 35) return;
+    const meta = tableMeta[tableChoice.index]; const unitX = dx / span; const unitY = dy / span;
+    const corridor = Math.max(span * .55, meta.table.header.span * 3);
+    const included = meta.balloons.filter((balloon) => {
+      const bx = balloon.x - p1.x; const by = balloon.y - p1.y; const along = bx * unitX + by * unitY; const perpendicular = Math.abs(bx * unitY - by * unitX);
+      return along >= -meta.table.header.span && along <= span + meta.table.header.span && perpendicular <= corridor;
+    });
+    const byItem = new Map();
+    included.forEach((balloon) => { const item = balloon.parsed.item; byItem.set(item, (byItem.get(item) || 0) + balloon.parsed.qty); });
+    const rowMap = new Map(meta.table.rows.map((row) => [row.item, row]));
+    const entries = [...byItem].filter(([item]) => rowMap.has(item)).map(([item, qty]) => ({ item, qty, catalog: rowMap.get(item).catalog }));
+    const shownValue = /^\s*\d+(?:\.\d+)?\s*$/.test(String(dimension.text || '')) ? Number(dimension.text) : Number(dimension.measurement);
+    const targetIn = shownValue / 25.4; const best = entries.length ? bestDimensionCombination(entries, targetIn) : null;
+    const calculatedMm = best ? best.total * 25.4 : 0; const difference = best ? calculatedMm - shownValue : null;
+    const vertical = Math.abs(dx) < Math.abs(dy) * .3;
+    let status = '無法配對 ITEM'; let level = 'review';
+    if (best) {
+      const withinRound = Math.abs(difference) <= 1; const withinTolerance = Math.abs(difference) <= 10;
+      if (vertical) { status = withinTolerance ? '端部／直立：低信心一致' : '端部／直立：低信心差異'; level = 'review'; }
+      else if (best.ambiguous) { status = withinTolerance ? '推估一致' : '推估有差異'; level = withinTolerance ? 'estimate' : 'bad'; }
+      else if (withinRound) { status = '四捨五入後一致'; level = 'ok'; }
+      else if (withinTolerance) { status = '±10 mm 內'; level = 'tolerance'; }
+      else { status = '需要檢查'; level = 'bad'; }
+    }
+    audits[tableChoice.index].push({ shownValue, calculatedMm, difference, formula: best?.formula.join(' + ') || '—', status, level, vertical, ambiguous: best?.ambiguous || false });
+  });
+  audits.forEach((list) => list.sort((a, b) => a.shownValue - b.shownValue));
+  return audits;
+}
+
 function collectSegments(database) {
   const segments = [];
   const add = (a, b) => {
@@ -180,7 +242,7 @@ function extractTables(database) {
   const valid = marked.filter((table) => !table.crossed);
   if (!valid.length) throw new Error(`找到 ${marked.length} 個表格，但全部位於打叉圖框內`);
   const crossBoxes = collectCrossBoxes(segments);
-  const tableMeta = valid.map((table) => ({ table, center: tableCenter(table), items: new Set(table.rows.map((row) => row.item)), counts: {}, unreadable: [] }));
+  const tableMeta = valid.map((table) => ({ table, center: tableCenter(table), items: new Set(table.rows.map((row) => row.item)), counts: {}, unreadable: [], balloons: [] }));
   const balloons = collectBalloons(database, texts).filter((balloon) => !crossBoxes.some((box) => balloon.x >= box.minX && balloon.x <= box.maxX && balloon.y >= box.minY && balloon.y <= box.maxY));
   balloons.forEach((balloon) => {
     let choices = tableMeta;
@@ -188,9 +250,10 @@ function extractTables(database) {
     const selected = choices.map((meta) => ({ meta, distance: Math.hypot(balloon.x - meta.center.x, balloon.y - meta.center.y) / Math.max(meta.table.header.span, 1) })).sort((a, b) => a.distance - b.distance)[0];
     if (!selected || selected.distance > 30) return;
     if (!balloon.parsed) selected.meta.unreadable.push(balloon.raw || '(空白)');
-    else selected.meta.counts[balloon.parsed.item] = (selected.meta.counts[balloon.parsed.item] || 0) + balloon.parsed.qty;
+    else { selected.meta.counts[balloon.parsed.item] = (selected.meta.counts[balloon.parsed.item] || 0) + balloon.parsed.qty; selected.meta.balloons.push(balloon); }
   });
-  const auditedTables = tableMeta.map(({ table, counts, unreadable }) => ({ ...table, audit: { counts, unreadable, balloonCount: Object.values(counts).reduce((sum, qty) => sum + qty, 0) } }));
+  const dimensionAudits = collectDimensionAudits(database, tableMeta, crossBoxes);
+  const auditedTables = tableMeta.map(({ table, counts, unreadable }, index) => ({ ...table, audit: { counts, unreadable, dimensionAudits: dimensionAudits[index], balloonCount: Object.values(counts).reduce((sum, qty) => sum + qty, 0) } }));
   return { tables: auditedTables, excludedCount: marked.length - valid.length, detectedCount: marked.length };
 }
 
@@ -320,7 +383,9 @@ function renderData() {
     ...(job.unreadableBalloons || []).map((label) => `無法辨識圓圈文字：${label}`),
   ];
   const auditNotice = auditIssues.length ? `<div class="audit-summary"><strong>⚠ 圖面數量驗算提示</strong><ul>${auditIssues.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul></div>` : '';
-  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${auditNotice}${duplicateNotice}`;
+  const dimensionRows = (job.dimensionAudits || []).map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td></tr>`).join('');
+  const dimensionSection = `<section class="dimension-audit"><div class="dimension-title"><strong>DIMENSION 長度驗算</strong><span>單段／LEM／LFM 可直接判定；多段 Catalog 與直立段標示低信心</span></div>${dimensionRows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${dimensionRows}</tbody></table>` : '<p class="dimension-empty">未找到可驗算的線性 Dimension，可能已被 Explode。</p>'}</section>`;
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${dimensionSection}${auditNotice}${duplicateNotice}`;
 }
 
 function renderChecks() {
@@ -389,7 +454,7 @@ async function processJob(job) {
       const parts = result.tables.map((table, index) => {
         const suffix = result.tables.length > 1 ? `_${String(index + 1).padStart(2, '0')}` : '';
         const rawRows = table.rows;
-        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount, drawingCounts: table.audit?.counts || {}, unreadableBalloons: table.audit?.unreadable || [] };
+        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount, drawingCounts: table.audit?.counts || {}, unreadableBalloons: table.audit?.unreadable || [], dimensionAudits: table.audit?.dimensionAudits || [] };
       });
       if (sourceIndex >= 0) { jobs.splice(sourceIndex, 1, ...parts); if (activeIndex === sourceIndex) activeIndex = sourceIndex; }
       render(); return;
