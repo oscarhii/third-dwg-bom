@@ -21,7 +21,7 @@ let processingPromise = Promise.resolve();
 
 function getEngine() {
   if (!enginePromise) {
-    const wasmBase = new URL('.', window.location.href).href.replace(/\/$/, '');
+    const wasmBase = new URL('../', window.location.href).href.replace(/\/$/, '');
     enginePromise = LibreDwg.create(wasmBase).then((engine) => {
       ui.engineStatus.innerHTML = '<i></i>解析引擎已就緒';
       ui.engineStatus.className = 'engine-status ready';
