@@ -81,12 +81,15 @@ function parseBalloonLabel(value) {
 
 function collectBalloons(database, texts) {
   const circles = database.entities.filter((entity) => entity.type === 'CIRCLE' && entity.center && Number.isFinite(entity.radius) && entity.radius > 0);
+  const leaderLines = database.entities.filter((entity) => entity.type === 'LINE' && (entity.layer || entity.layerName) === 'LABELS' && entity.startPoint && entity.endPoint);
   return circles.map((circle) => {
     const candidates = texts.map((entry) => ({ entry, distance: Math.hypot(entry.x - circle.center.x, entry.y - circle.center.y) })).filter(({ distance }) => distance <= circle.radius * 1.45).sort((a, b) => a.distance - b.distance);
     const combinedText = candidates.map(({ entry }) => entry).sort((a, b) => a.x - b.x).map((entry) => entry.text).join(' ');
     const combined = parseBalloonLabel(combinedText);
     const parsedCandidate = candidates.map(({ entry }) => ({ entry, parsed: parseBalloonLabel(entry.text) })).find(({ parsed }) => parsed);
-    return { x: circle.center.x, y: circle.center.y, radius: circle.radius, parsed: combined || parsedCandidate?.parsed || null, raw: combinedText || candidates[0]?.entry.text || '' };
+    const leader = leaderLines.map((line) => { const startDistance = Math.hypot(line.startPoint.x - circle.center.x, line.startPoint.y - circle.center.y); const endDistance = Math.hypot(line.endPoint.x - circle.center.x, line.endPoint.y - circle.center.y); return { line, near: Math.min(startDistance, endDistance), anchor: startDistance > endDistance ? line.startPoint : line.endPoint }; }).filter((entry) => entry.near <= circle.radius * 1.7).sort((a, b) => a.near - b.near)[0];
+    const anchor = leader?.anchor || circle.center;
+    return { x: anchor.x, y: anchor.y, circleX: circle.center.x, circleY: circle.center.y, radius: circle.radius, parsed: combined || parsedCandidate?.parsed || null, raw: combinedText || candidates[0]?.entry.text || '' };
   });
 }
 
@@ -130,8 +133,24 @@ function bestDimensionCombination(entries, targetIn) {
   return states.sort((a, b) => Math.abs(a.total - targetIn) - Math.abs(b.total - targetIn))[0];
 }
 
+function collectExplodedDimensions(database) {
+  const dimEntities = database.entities.filter((entity) => (entity.layer || entity.layerName) === 'DIMS' && (entity.type === 'LINE' || entity.type === 'TEXT' || entity.type === 'MTEXT'));
+  const dimensions = []; let lines = [];
+  dimEntities.forEach((entity) => {
+    if (entity.type === 'LINE') { lines.push(entity); if (lines.length > 20) lines = lines.slice(-20); return; }
+    const raw = entity.type === 'TEXT' ? entity.text : entity.text; const text = plainText(raw);
+    if (!/^\d+(?:\.\d+)?$/.test(text) || lines.length < 10) return;
+    const group = lines.slice(-10); const firstDimensionLine = group[8]; const secondDimensionLine = group[9];
+    const p1 = firstDimensionLine?.startPoint; const p2 = secondDimensionLine?.startPoint;
+    if (p1 && p2 && [p1.x, p1.y, p2.x, p2.y].every(Number.isFinite)) dimensions.push({ type: 'DIMENSION', subclassMarker: 'ExplodedDimension', subDefinitionPoint1: p1, subDefinitionPoint2: p2, measurement: Number(text), text, textPoint: entity.startPoint || entity.insertionPoint, exploded: true });
+    lines = [];
+  });
+  return dimensions;
+}
+
 function collectDimensionAudits(database, tableMeta, crossBoxes) {
-  const dimensions = database.entities.filter((entity) => entity.type === 'DIMENSION' && entity.subclassMarker === 'AcDbAlignedDimension' && entity.subDefinitionPoint1 && entity.subDefinitionPoint2 && Number.isFinite(entity.measurement) && entity.measurement > 0);
+  const nativeDimensions = database.entities.filter((entity) => entity.type === 'DIMENSION' && entity.subclassMarker === 'AcDbAlignedDimension' && entity.subDefinitionPoint1 && entity.subDefinitionPoint2 && Number.isFinite(entity.measurement) && entity.measurement > 0);
+  const dimensions = [...nativeDimensions, ...collectExplodedDimensions(database)];
   const audits = tableMeta.map(() => []);
   dimensions.forEach((dimension) => {
     const p1 = dimension.subDefinitionPoint1; const p2 = dimension.subDefinitionPoint2;
@@ -142,10 +161,11 @@ function collectDimensionAudits(database, tableMeta, crossBoxes) {
     const tableChoice = tableMeta.map((meta, index) => ({ index, distance: Math.hypot(midX - meta.center.x, midY - meta.center.y) / Math.max(meta.table.header.span, 1) })).sort((a, b) => a.distance - b.distance)[0];
     if (!tableChoice || tableChoice.distance > 35) return;
     const meta = tableMeta[tableChoice.index]; const unitX = dx / span; const unitY = dy / span;
-    const corridor = Math.max(span * .55, meta.table.header.span * 3);
+    const typicalRadius = meta.balloons.length ? meta.balloons.map((balloon) => balloon.radius).sort((a, b) => a - b)[Math.floor(meta.balloons.length / 2)] : 1;
+    const corridor = Math.max(span * .4, typicalRadius * 3); const endTolerance = Math.max(span * .08, typicalRadius * 2);
     const included = meta.balloons.filter((balloon) => {
       const bx = balloon.x - p1.x; const by = balloon.y - p1.y; const along = bx * unitX + by * unitY; const perpendicular = Math.abs(bx * unitY - by * unitX);
-      return along >= -meta.table.header.span && along <= span + meta.table.header.span && perpendicular <= corridor;
+      return along >= -endTolerance && along <= span + endTolerance && perpendicular <= corridor;
     });
     const byItem = new Map();
     included.forEach((balloon) => { const item = balloon.parsed.item; byItem.set(item, (byItem.get(item) || 0) + balloon.parsed.qty); });
@@ -154,11 +174,12 @@ function collectDimensionAudits(database, tableMeta, crossBoxes) {
     const shownValue = /^\s*\d+(?:\.\d+)?\s*$/.test(String(dimension.text || '')) ? Number(dimension.text) : Number(dimension.measurement);
     const targetIn = shownValue / 25.4; const best = entries.length ? bestDimensionCombination(entries, targetIn) : null;
     const calculatedMm = best ? best.total * 25.4 : 0; const difference = best ? calculatedMm - shownValue : null;
-    const vertical = Math.abs(dx) < Math.abs(dy) * .3;
+    const verticalItems = new Set(['A', 'B', 'D', 'F', 'R', 'O', 'Q', 'P', 'L']);
+    const vertical = entries.length > 0 && entries.every((entry) => verticalItems.has(entry.item));
     let status = '無法配對 ITEM'; let level = 'review';
     if (best) {
       const withinRound = Math.abs(difference) <= 1; const withinTolerance = Math.abs(difference) <= 10;
-      if (vertical) { status = withinTolerance ? '端部／直立：低信心一致' : '端部／直立：低信心差異'; level = 'review'; }
+      if (vertical) { status = withinTolerance ? '直立 ITEM：低信心一致' : '直立 ITEM：低信心差異'; level = 'review'; }
       else if (best.ambiguous) { status = withinTolerance ? '推估一致' : '推估有差異'; level = withinTolerance ? 'estimate' : 'bad'; }
       else if (withinRound) { status = '四捨五入後一致'; level = 'ok'; }
       else if (withinTolerance) { status = '±10 mm 內'; level = 'tolerance'; }
@@ -384,7 +405,7 @@ function renderData() {
   ];
   const auditNotice = auditIssues.length ? `<div class="audit-summary"><strong>⚠ 圖面數量驗算提示</strong><ul>${auditIssues.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul></div>` : '';
   const dimensionRows = (job.dimensionAudits || []).map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td></tr>`).join('');
-  const dimensionSection = `<section class="dimension-audit"><div class="dimension-title"><strong>DIMENSION 長度驗算</strong><span>單段／LEM／LFM 可直接判定；多段 Catalog 與直立段標示低信心</span></div>${dimensionRows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${dimensionRows}</tbody></table>` : '<p class="dimension-empty">未找到可驗算的線性 Dimension，可能已被 Explode。</p>'}</section>`;
+  const dimensionSection = `<section class="dimension-audit"><div class="dimension-title"><strong>DIMENSION 長度驗算</strong><span>單段／LEM／LFM 可直接判定；多段 Catalog 與直立段標示低信心</span></div>${dimensionRows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${dimensionRows}</tbody></table>` : '<p class="dimension-empty">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</p>'}</section>`;
   ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${dimensionSection}${auditNotice}${duplicateNotice}`;
 }
 
