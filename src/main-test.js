@@ -139,10 +139,12 @@ function collectExplodedDimensions(database) {
   dimEntities.forEach((entity) => {
     if (entity.type === 'LINE') { lines.push(entity); if (lines.length > 20) lines = lines.slice(-20); return; }
     const raw = entity.type === 'TEXT' ? entity.text : entity.text; const text = plainText(raw);
-    if (!/^\d+(?:\.\d+)?$/.test(text) || lines.length < 10) return;
-    const group = lines.slice(-10); const firstDimensionLine = group[8]; const secondDimensionLine = group[9];
-    const p1 = firstDimensionLine?.startPoint; const p2 = secondDimensionLine?.startPoint;
-    if (p1 && p2 && [p1.x, p1.y, p2.x, p2.y].every(Number.isFinite)) dimensions.push({ type: 'DIMENSION', subclassMarker: 'ExplodedDimension', subDefinitionPoint1: p1, subDefinitionPoint2: p2, measurement: Number(text), text, textPoint: entity.startPoint || entity.insertionPoint, exploded: true });
+    if (!/^\d+(?:\.\d+)?$/.test(text)) return;
+    const textPoint = entity.startPoint || entity.insertionPoint; const group = lines.slice(-Math.max(2, Math.min(lines.length, 14)));
+    let p1 = group.length >= 10 ? group.at(-2)?.startPoint : group.at(-2)?.startPoint; let p2 = group.at(-1)?.startPoint;
+    const validPair = p1 && p2 && [p1.x, p1.y, p2.x, p2.y].every(Number.isFinite) && Math.hypot(p2.x - p1.x, p2.y - p1.y) > .01;
+    if ((!validPair || lines.length < 8) && textPoint) { p1 = { x: textPoint.x - 1, y: textPoint.y }; p2 = { x: textPoint.x + 1, y: textPoint.y }; }
+    if (p1 && p2) dimensions.push({ type: 'DIMENSION', subclassMarker: 'ExplodedDimension', subDefinitionPoint1: p1, subDefinitionPoint2: p2, measurement: Number(text), text, textPoint, exploded: true, geometryConfidence: lines.length >= 10 ? 'high' : 'low' });
     lines = [];
   });
   return dimensions;
@@ -169,6 +171,7 @@ function auditFromTokens(dimension, tokens, tokenIds, manual = false) {
 }
 
 function tokenDistancePenalty(token, dimension) {
+  if (dimension.geometryConfidence === 'low') return 0;
   const dx = dimension.p2.x - dimension.p1.x; const dy = dimension.p2.y - dimension.p1.y; const span = Math.hypot(dx, dy) || 1; const ux = dx / span; const uy = dy / span;
   const bx = token.x - dimension.p1.x; const by = token.y - dimension.p1.y; const along = bx * ux + by * uy; const perpendicular = Math.abs(bx * uy - by * ux);
   const outside = along < 0 ? -along : along > span ? along - span : 0;
@@ -212,7 +215,7 @@ function collectDimensionAudits(database, tableMeta, crossBoxes) {
     const p1 = entity.subDefinitionPoint1; const p2 = entity.subDefinitionPoint2; if (![p1.x,p1.y,p2.x,p2.y].every(Number.isFinite)) return;
     const midX=(p1.x+p2.x)/2,midY=(p1.y+p2.y)/2;if(crossBoxes.some((box)=>midX>=box.minX&&midX<=box.maxX&&midY>=box.minY&&midY<=box.maxY))return;
     const choice=tableMeta.map((meta,index)=>({index,distance:Math.hypot(midX-meta.center.x,midY-meta.center.y)/Math.max(meta.table.header.span,1)})).sort((a,b)=>a.distance-b.distance)[0];if(!choice||choice.distance>35)return;
-    const shownValue=/^\s*\d+(?:\.\d+)?\s*$/.test(String(entity.text||''))?Number(entity.text):Number(entity.measurement); grouped[choice.index].push({shownValue,p1,p2,exploded:Boolean(entity.exploded)});
+    const shownValue=/^\s*\d+(?:\.\d+)?\s*$/.test(String(entity.text||''))?Number(entity.text):Number(entity.measurement); grouped[choice.index].push({shownValue,p1,p2,exploded:Boolean(entity.exploded),geometryConfidence:entity.geometryConfidence||'high'});
   });
   return tableMeta.map((meta,tableIndex)=>{
     const rowMap=new Map(meta.table.rows.map((row)=>[row.item,row]));const tokens=[];
