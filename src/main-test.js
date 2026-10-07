@@ -7,7 +7,7 @@ const $ = (selector) => document.querySelector(selector);
 const ui = {
   dropzone: $('#dropzone'), fileInput: $('#fileInput'), engineStatus: $('#engineStatus'),
   summary: $('#summary'), clearButton: $('#clearButton'), fileTabs: $('#fileTabs'),
-  dataEmpty: $('#dataEmpty'), dataView: $('#dataView'), includeHeader: $('#includeHeader'),
+  dataEmpty: $('#dataEmpty'), dataView: $('#dataView'), dimensionView: $('#dimensionView'), dimensionSummary: $('#dimensionSummary'), includeHeader: $('#includeHeader'),
   editButton: $('#editButton'), undoButton: $('#undoButton'), resetButton: $('#resetButton'), csvButton: $('#csvButton'), zipButton: $('#zipButton'), activeFileLabel: $('#activeFileLabel'),
   totalIn: $('#totalIn'), totalMm: $('#totalMm'), totalWarning: $('#totalWarning'), formula: $('#formula'), itemFilter: $('#itemFilter'),
   showAllButton: $('#showAllButton'), selectAllButton: $('#selectAllButton'),
@@ -368,8 +368,20 @@ function renderTabs() {
   }).join('');
 }
 
+function renderDimensionAudit(job) {
+  if (!job || job.status !== 'done') {
+    ui.dimensionSummary.textContent = job ? '等待 DWG 解析完成' : '請先加入 DWG';
+    ui.dimensionView.innerHTML = '<div class="dimension-empty-state">上傳 DWG 後顯示圖面尺寸、理論尺寸、差異與計算式</div>';
+    return;
+  }
+  const audits = job.dimensionAudits || [];
+  ui.dimensionSummary.textContent = audits.length ? `${audits.length} 個尺寸｜${job.displayName || job.file.name}` : `未找到尺寸｜${job.displayName || job.file.name}`;
+  const rows = audits.map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td></tr>`).join('');
+  ui.dimensionView.innerHTML = rows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="dimension-empty-state">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</div>';
+}
+
 function renderData() {
-  const job = currentJob();
+  const job = currentJob(); renderDimensionAudit(job);
   const done = jobs.filter((entry) => entry.status === 'done').length;
   ui.summary.textContent = jobs.length ? `${jobs.length} 個檔案・${done} 完成` : '尚未加入檔案';
   ui.dataEmpty.hidden = Boolean(job);
@@ -404,9 +416,7 @@ function renderData() {
     ...(job.unreadableBalloons || []).map((label) => `無法辨識圓圈文字：${label}`),
   ];
   const auditNotice = auditIssues.length ? `<div class="audit-summary"><strong>⚠ 圖面數量驗算提示</strong><ul>${auditIssues.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul></div>` : '';
-  const dimensionRows = (job.dimensionAudits || []).map((audit, index) => `<tr><td>D${index + 1}</td><td>${fmt(audit.shownValue)} mm</td><td>${audit.difference == null ? '—' : `${fmt(audit.calculatedMm)} mm`}</td><td>${audit.difference == null ? '—' : `${audit.difference >= 0 ? '+' : ''}${fmt(audit.difference)} mm`}</td><td class="dimension-status dimension-${audit.level}">${escapeHtml(audit.status)}</td><td class="dimension-formula">${escapeHtml(audit.formula)}</td></tr>`).join('');
-  const dimensionSection = `<section class="dimension-audit"><div class="dimension-title"><strong>DIMENSION 長度驗算</strong><span>單段／LEM／LFM 可直接判定；多段 Catalog 與直立段標示低信心</span></div>${dimensionRows ? `<table><thead><tr><th>#</th><th>圖面尺寸</th><th>理論尺寸</th><th>差異</th><th>結果</th><th>計算式（in）</th></tr></thead><tbody>${dimensionRows}</tbody></table>` : '<p class="dimension-empty">未找到可驗算的原生或 DIMS 圖層炸開尺寸。</p>'}</section>`;
-  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${dimensionSection}${auditNotice}${duplicateNotice}`;
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${auditNotice}${duplicateNotice}`;
 }
 
 function renderChecks() {
@@ -503,6 +513,12 @@ ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ['dragenter', 'dragover'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
 ui.dropzone.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
+ui.dimensionView.addEventListener('wheel', (event) => {
+  const hasHorizontalOverflow = ui.dimensionView.scrollWidth > ui.dimensionView.clientWidth + 1;
+  if (!hasHorizontalOverflow || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  const before = ui.dimensionView.scrollLeft; ui.dimensionView.scrollLeft += event.deltaY;
+  if (ui.dimensionView.scrollLeft !== before) event.preventDefault();
+}, { passive: false });
 ui.fileTabs.addEventListener('wheel', (event) => {
   const hasHorizontalOverflow = ui.fileTabs.scrollWidth > ui.fileTabs.clientWidth + 1;
   if (!hasHorizontalOverflow || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
