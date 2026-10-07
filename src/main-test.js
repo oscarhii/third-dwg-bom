@@ -1,4 +1,5 @@
 import './style.css';
+import './test.css';
 import JSZip from 'jszip';
 import { Dwg_File_Type, LibreDwg } from '@mlightcad/libredwg-web';
 
@@ -69,6 +70,42 @@ function collectTexts(database) {
     if (entity.type === 'MTEXT' && entity.insertionPoint) return [{ text: plainText(entity.text), x: entity.insertionPoint.x, y: entity.insertionPoint.y }];
     return [];
   }).filter((entry) => entry.text && Number.isFinite(entry.x) && Number.isFinite(entry.y));
+}
+
+function parseBalloonLabel(value) {
+  const normalized = plainText(value).toUpperCase().replace(/（/g, '(').replace(/）/g, ')').trim();
+  const match = normalized.match(/^(?:(\d+)\s*[\)×X*.:_-]?\s*)?([A-Z]{1,2})$/);
+  if (!match) return null;
+  return { item: match[2], qty: Math.max(1, Number(match[1] || 1)), label: normalized };
+}
+
+function collectBalloons(database, texts) {
+  const circles = database.entities.filter((entity) => entity.type === 'CIRCLE' && entity.center && Number.isFinite(entity.radius) && entity.radius > 0);
+  return circles.map((circle) => {
+    const candidates = texts.map((entry) => ({ entry, distance: Math.hypot(entry.x - circle.center.x, entry.y - circle.center.y) })).filter(({ distance }) => distance <= circle.radius * 1.45).sort((a, b) => a.distance - b.distance);
+    const combinedText = candidates.map(({ entry }) => entry).sort((a, b) => a.x - b.x).map((entry) => entry.text).join(' ');
+    const combined = parseBalloonLabel(combinedText);
+    const parsedCandidate = candidates.map(({ entry }) => ({ entry, parsed: parseBalloonLabel(entry.text) })).find(({ parsed }) => parsed);
+    return { x: circle.center.x, y: circle.center.y, radius: circle.radius, parsed: combined || parsedCandidate?.parsed || null, raw: combinedText || candidates[0]?.entry.text || '' };
+  });
+}
+
+function collectCrossBoxes(segments) {
+  const boxes = [];
+  for (let first = 0; first < segments.length; first += 1) for (let second = first + 1; second < segments.length; second += 1) {
+    const a = segments[first]; const b = segments[second];
+    if (Math.abs(a.dx) < a.length * .25 || Math.abs(a.dy) < a.length * .25 || Math.abs(b.dx) < b.length * .25 || Math.abs(b.dy) < b.length * .25) continue;
+    if (Math.sign(a.dx * a.dy) === Math.sign(b.dx * b.dy)) continue;
+    const minX = Math.min(a.minX, b.minX); const maxX = Math.max(a.maxX, b.maxX); const minY = Math.min(a.minY, b.minY); const maxY = Math.max(a.maxY, b.maxY);
+    const tolerance = Math.max(maxX - minX, maxY - minY) * .08;
+    if (Math.abs(a.minX - b.minX) <= tolerance && Math.abs(a.maxX - b.maxX) <= tolerance && Math.abs(a.minY - b.minY) <= tolerance && Math.abs(a.maxY - b.maxY) <= tolerance) boxes.push({ minX, maxX, minY, maxY });
+  }
+  return boxes;
+}
+
+function tableCenter(table) {
+  const points = [table.header.item, table.header.qty, table.header.catalog, ...table.sourceRows.flatMap((row) => [row.itemCell, row.qtyCell, row.catalogCell])];
+  return { x: (Math.min(...points.map((point) => point.x)) + Math.max(...points.map((point) => point.x))) / 2, y: (Math.min(...points.map((point) => point.y)) + Math.max(...points.map((point) => point.y))) / 2 };
 }
 
 function collectSegments(database) {
@@ -142,7 +179,19 @@ function extractTables(database) {
   const marked = tables.map((table) => ({ ...table, crossed: isInsideCross(table, segments) }));
   const valid = marked.filter((table) => !table.crossed);
   if (!valid.length) throw new Error(`找到 ${marked.length} 個表格，但全部位於打叉圖框內`);
-  return { tables: valid, excludedCount: marked.length - valid.length, detectedCount: marked.length };
+  const crossBoxes = collectCrossBoxes(segments);
+  const tableMeta = valid.map((table) => ({ table, center: tableCenter(table), items: new Set(table.rows.map((row) => row.item)), counts: {}, unreadable: [] }));
+  const balloons = collectBalloons(database, texts).filter((balloon) => !crossBoxes.some((box) => balloon.x >= box.minX && balloon.x <= box.maxX && balloon.y >= box.minY && balloon.y <= box.maxY));
+  balloons.forEach((balloon) => {
+    let choices = tableMeta;
+    if (balloon.parsed) { const matching = tableMeta.filter((meta) => meta.items.has(balloon.parsed.item)); if (matching.length) choices = matching; }
+    const selected = choices.map((meta) => ({ meta, distance: Math.hypot(balloon.x - meta.center.x, balloon.y - meta.center.y) / Math.max(meta.table.header.span, 1) })).sort((a, b) => a.distance - b.distance)[0];
+    if (!selected || selected.distance > 30) return;
+    if (!balloon.parsed) selected.meta.unreadable.push(balloon.raw || '(空白)');
+    else selected.meta.counts[balloon.parsed.item] = (selected.meta.counts[balloon.parsed.item] || 0) + balloon.parsed.qty;
+  });
+  const auditedTables = tableMeta.map(({ table, counts, unreadable }) => ({ ...table, audit: { counts, unreadable, balloonCount: Object.values(counts).reduce((sum, qty) => sum + qty, 0) } }));
+  return { tables: auditedTables, excludedCount: marked.length - valid.length, detectedCount: marked.length };
 }
 
 function prepareRows(rows) {
@@ -254,7 +303,9 @@ function renderData() {
     const modified = new Set(row.modifiedFields || []);
     const cell = (field, value, type = 'text') => job.editing ? `<input class="cell-input ${modified.has(field) ? 'modified-cell' : ''}" data-edit-row="${index}" data-edit-field="${field}" type="${type}" value="${escapeHtml(value)}" ${type === 'number' ? 'min="1"' : ''}/>` : `<span class="${modified.has(field) ? 'modified-cell text-cell' : ''}">${escapeHtml(value)}</span>`;
     const icons = `${row.duplicateCatalog ? '<span class="status-icon warning-icon" title="此 CATALOG NUMBER 在本檔案中重複">!</span>' : ''}${modified.size ? '<span class="status-icon modified-icon" title="此列含有手動修改的欄位">✎</span>' : ''}`;
-    return `<tr class="${row.crossItemDuplicate || row.error ? 'warning-row' : ''}"><td>${cell('item', row.item)}</td><td>${cell('qty', row.qty, 'number')}</td><td>${cell('catalog', row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td><td class="row-status">${icons}</td></tr>`;
+    const drawingQty = Number(job.drawingCounts?.[row.item] || 0); const difference = drawingQty - row.qty;
+    const auditText = difference === 0 ? '✓ 一致' : difference > 0 ? `多 ${difference}` : `少 ${Math.abs(difference)}`;
+    return `<tr class="${row.crossItemDuplicate || row.error ? 'warning-row' : ''}"><td>${cell('item', row.item)}</td><td>${cell('qty', row.qty, 'number')}</td><td>${drawingQty}</td><td class="audit-result ${difference === 0 ? 'audit-ok' : 'audit-bad'}">${auditText}</td><td>${cell('catalog', row.catalog)}</td><td>${row.error ? 'ERROR' : row.values.join(', ')}</td><td class="row-status">${icons}</td></tr>`;
   }).join('');
   const catalogGroups = new Map();
   job.rows.forEach((row) => {
@@ -262,7 +313,14 @@ function renderData() {
   });
   const duplicates = [...catalogGroups.values()].filter((group) => group.length > 1);
   const duplicateNotice = duplicates.length ? `<div class="duplicate-summary"><strong>⚠ 發現相同 CATALOG NUMBER</strong><ul>${duplicates.map((group) => `<li><code>${escapeHtml(group[0].catalog)}</code><span>${group.length} 筆｜ITEM ${escapeHtml([...new Set(group.map((row) => row.item))].join(', '))}</span></li>`).join('')}</ul></div>` : '';
-  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>QTY</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${duplicateNotice}`;
+  const tableItems = new Set(job.rows.map((row) => row.item));
+  const extraItems = Object.entries(job.drawingCounts || {}).filter(([item]) => !tableItems.has(item));
+  const auditIssues = [
+    ...extraItems.map(([item, qty]) => `圖面有 ITEM ${item} × ${qty}，Table 中沒有`),
+    ...(job.unreadableBalloons || []).map((label) => `無法辨識圓圈文字：${label}`),
+  ];
+  const auditNotice = auditIssues.length ? `<div class="audit-summary"><strong>⚠ 圖面數量驗算提示</strong><ul>${auditIssues.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul></div>` : '';
+  ui.dataView.innerHTML = `<table><thead><tr><th>ITEM</th><th>TABLE QTY</th><th>圖面數量</th><th>驗算</th><th>CATALOG NUMBER</th><th>解析長度</th><th></th></tr></thead><tbody>${rows}</tbody></table>${auditNotice}${duplicateNotice}`;
 }
 
 function renderChecks() {
@@ -331,7 +389,7 @@ async function processJob(job) {
       const parts = result.tables.map((table, index) => {
         const suffix = result.tables.length > 1 ? `_${String(index + 1).padStart(2, '0')}` : '';
         const rawRows = table.rows;
-        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount };
+        return { file: job.file, status: 'done', rawRows, originalRows: cloneRawRows(rawRows), editHistory: [], rows: prepareRows(rawRows), editing: false, displayName: `${stem}${suffix}`, outputName: `${stem}${suffix}.csv`, excludedCount: index === 0 ? result.excludedCount : 0, detectedCount: result.detectedCount, drawingCounts: table.audit?.counts || {}, unreadableBalloons: table.audit?.unreadable || [] };
       });
       if (sourceIndex >= 0) { jobs.splice(sourceIndex, 1, ...parts); if (activeIndex === sourceIndex) activeIndex = sourceIndex; }
       render(); return;
