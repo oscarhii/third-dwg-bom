@@ -13,6 +13,7 @@ const ui = {
   showAllButton: $('#showAllButton'), selectAllButton: $('#selectAllButton'),
   clearChecksButton: $('#clearChecksButton'), selectVisibleButton: $('#selectVisibleButton'),
   clearVisibleButton: $('#clearVisibleButton'), filterHint: $('#filterHint'), checkList: $('#checkList'),
+  workspaceTabs: [...document.querySelectorAll('[data-workspace-tab]')], dashboard: document.querySelector('.dashboard'),
 };
 
 const jobs = [];
@@ -197,7 +198,7 @@ function dimensionCandidates(tokens, dimension) {
     if (!(token.length > 0) || token.length > maxSum) return;
     const bit = 1n << BigInt(index); const penalty = tokenDistancePenalty(token, dimension); const snapshot = [...states.entries()];
     snapshot.forEach(([sum, list]) => { const nextSum = sum + token.length; if (nextSum > maxSum) return; const bucket = states.get(nextSum) || [];
-      list.forEach((state) => bucket.push({ mask: state.mask | bit, ids: [...state.ids, token.id], geometry: state.geometry + penalty }));
+      list.forEach((state) => { if (tokens.length > 80 && state.ids.length >= 24) return; bucket.push({ mask: state.mask | bit, ids: [...state.ids, token.id], geometry: state.geometry + penalty }); });
       bucket.sort((a, b) => a.geometry - b.geometry); states.set(nextSum, bucket.slice(0, perSum));
     });
   });
@@ -647,6 +648,7 @@ async function addFiles(fileList) {
   await processingPromise; ui.fileInput.value = '';
 }
 
+ui.workspaceTabs.forEach((button) => button.addEventListener('click', () => { ui.dashboard.dataset.workspace = button.dataset.workspaceTab; ui.workspaceTabs.forEach((tab) => { const active = tab === button; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', String(active)); }); }));
 ui.fileInput.addEventListener('change', () => addFiles(ui.fileInput.files));
 ['dragenter', 'dragover'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.add('dragging'); }));
 ['dragleave', 'drop'].forEach((name) => ui.dropzone.addEventListener(name, (event) => { event.preventDefault(); ui.dropzone.classList.remove('dragging'); }));
