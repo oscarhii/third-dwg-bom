@@ -162,8 +162,8 @@ function collectExplodedDimensions(database) {
 
 function materialLegs(catalog) {
   const normalized = cleanAlnum(catalog); const square = normalized.match(/G(?:LEM|LFM)(\d+)/);
-  if (square) return [Number(square[1]), Number(square[1])];
-  try { const parsed = parseCatalog(normalized); const values = [...parsed.values]; return values.length > 1 && values[0] === values.slice(1).reduce((sum, value) => sum + value, 0) ? values.slice(1) : values; }
+  if (square) return [Number(square[1]), Number(square[1])].filter((value) => value > 0);
+  try { const parsed = parseCatalog(normalized); const values = [...parsed.values].filter((value) => Number.isFinite(value) && value > 0); return values.length > 1 && values[0] === values.slice(1).reduce((sum, value) => sum + value, 0) ? values.slice(1) : values; }
   catch { return []; }
 }
 
@@ -191,9 +191,10 @@ function tokenDistancePenalty(token, dimension) {
 }
 
 function dimensionCandidates(tokens, dimension) {
-  const target = Math.max(0, Math.round(dimension.shownValue / 25.4)); const maxSum = target + 10; const perSum = 70;
+  const target = Math.max(0, Math.round(dimension.shownValue / 25.4)); const maxSum = target + 10; const complex = tokens.length > 40; const perSum = complex ? 28 : 70; const candidateLimit = complex ? 72 : 140;
   let states = new Map([[0, [{ mask: 0n, ids: [], geometry: 0 }]]]);
   tokens.forEach((token, index) => {
+    if (!(token.length > 0) || token.length > maxSum) return;
     const bit = 1n << BigInt(index); const penalty = tokenDistancePenalty(token, dimension); const snapshot = [...states.entries()];
     snapshot.forEach(([sum, list]) => { const nextSum = sum + token.length; if (nextSum > maxSum) return; const bucket = states.get(nextSum) || [];
       list.forEach((state) => bucket.push({ mask: state.mask | bit, ids: [...state.ids, token.id], geometry: state.geometry + penalty }));
@@ -202,7 +203,7 @@ function dimensionCandidates(tokens, dimension) {
   });
   const candidates = [];
   states.forEach((list, sum) => { if (Math.abs(sum - target) > 10) return; list.forEach((state) => candidates.push({ ...state, sum, cost: Math.abs(sum - target) * (dimension.isPlanar ? 90 : 24) + state.geometry })); });
-  return candidates.sort((a, b) => a.cost - b.cost).slice(0, 140);
+  return candidates.sort((a, b) => a.cost - b.cost).slice(0, candidateLimit);
 }
 
 function assignmentContinuityPenalty(assignments, tokens, dimensions) {
@@ -213,6 +214,8 @@ function assignmentContinuityPenalty(assignments, tokens, dimensions) {
 }
 
 function solveDimensionAssignments(tokens, dimensions) {
+  tokens = tokens.filter((token) => token.length > 0);
+  const complex = tokens.length > 40 || dimensions.length > 12; const stateLimit = complex ? 1800 : 5000;
   const prepared = dimensions.map((dimension, index) => ({ index, dimension, candidates: dimensionCandidates(tokens, dimension) })).sort((a, b) => Number(b.dimension.isPlanar) - Number(a.dimension.isPlanar) || a.candidates.length - b.candidates.length);
   let states = [{ mask: 0n, cost: 0, assignments: new Map() }];
   prepared.forEach(({ index, candidates }) => {
@@ -220,7 +223,7 @@ function solveDimensionAssignments(tokens, dimensions) {
     states.forEach((state) => candidates.forEach((candidate) => { if ((state.mask & candidate.mask) !== 0n) return; const assignments = new Map(state.assignments); assignments.set(index, candidate.ids); next.push({ mask: state.mask | candidate.mask, cost: state.cost + candidate.cost, assignments }); }));
     if (!next.length) return;
     const bestByMask = new Map(); next.forEach((state) => { const key = state.mask.toString(); if (!bestByMask.has(key) || state.cost < bestByMask.get(key).cost) bestByMask.set(key, state); });
-    states = [...bestByMask.values()].sort((a, b) => a.cost - b.cost).slice(0, 5000);
+    states = [...bestByMask.values()].sort((a, b) => a.cost - b.cost).slice(0, stateLimit);
   });
   const fullMask = tokens.length ? (1n << BigInt(tokens.length)) - 1n : 0n;
   states.forEach((state) => { state.continuity = assignmentContinuityPenalty(state.assignments, tokens, dimensions); });
@@ -229,7 +232,7 @@ function solveDimensionAssignments(tokens, dimensions) {
 }
 
 async function reshuffleDimensionAssignments(job, onProgress) {
-  const tokens = job.materialTokens || []; const audits = job.dimensionAudits || []; if (!tokens.length || !audits.length) return;
+  const tokens = (job.materialTokens || []).filter((token) => token.length > 0); const audits = job.dimensionAudits || []; if (!tokens.length || !audits.length) return;
   const locks = job.dimensionLocks ||= {}; const tokenById = new Map(tokens.map((token) => [token.id, token])); const fixedByDimension = audits.map(() => []); const lockedIds = new Set();
   Object.entries(locks).forEach(([id, owner]) => { const index = Number(owner); if (!tokenById.has(id) || !Number.isInteger(index) || !audits[index]) { delete locks[id]; return; } fixedByDimension[index].push(id); lockedIds.add(id); });
   const available = tokens.filter((token) => !lockedIds.has(token.id)); available.forEach((token) => { delete token.continuityTarget; }); const fixedComponents = new Map(); fixedByDimension.forEach((ids, owner) => ids.forEach((id) => { const token = tokenById.get(id); if (token?.componentId) fixedComponents.set(token.componentId, owner); })); available.forEach((token) => { if (fixedComponents.has(token.componentId)) token.continuityTarget = fixedComponents.get(token.componentId) + 1; }); const baseRound = job.dimensionShuffleCount || 0; let bestAudits = null; let bestUnused = Infinity; let bestError = Infinity; let attempts = 0;
