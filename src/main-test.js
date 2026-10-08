@@ -491,10 +491,22 @@ function materialFormulaHtml(formula) {
   return String(formula).split(' + ').map(materialLabelHtml).join('<span class="material-plus"> + </span>');
 }
 
+function progressMarkup(job) {
+  const progress = job?.progress || { percent: job?.status === 'queued' ? 0 : 5, label: job?.status === 'queued' ? '等待處理' : '準備中', detail: '' };
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const steps = [['read', '讀取'], ['decode', '解碼'], ['detect', '辨識'], ['infer', '推演'], ['finish', '完成']];
+  const stageOrder = { queued: -1, read: 0, decode: 1, detect: 2, infer: 3, finish: 4 }; const current = stageOrder[progress.stage] ?? -1;
+  return `<div class="analysis-progress" role="status" aria-live="polite"><div class="analysis-progress-head"><strong>${escapeHtml(progress.label)}</strong><span>${Math.round(percent)}%</span></div><div class="analysis-progress-track"><i style="width:${percent}%"></i></div><div class="analysis-progress-steps">${steps.map(([key, label], index) => `<span class="${index < current ? 'done' : index === current ? 'current' : ''}">${label}</span>`).join('')}</div>${progress.detail ? `<p>${escapeHtml(progress.detail)}</p>` : ''}</div>`;
+}
+async function updateJobProgress(job, percent, stage, label, detail = '') {
+  job.progress = { percent, stage, label, detail }; render();
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 function renderDimensionAudit(job) {
   if (!job || job.status !== 'done') {
-    ui.dimensionSummary.textContent = job ? '等待 DWG 解析完成' : '請先加入 DWG';
-    ui.dimensionView.innerHTML = '<div class="dimension-empty-state">上傳 DWG 後顯示圖面尺寸、理論尺寸、差異與計算式</div>';
+    ui.dimensionSummary.textContent = job ? (job.progress?.label || '等待 DWG 解析完成') : '請先加入 DWG';
+    ui.dimensionView.innerHTML = job ? progressMarkup(job) : '<div class="dimension-empty-state">完成 DWG 讀取後，會嘗試從原生 Dimension 或炸開尺寸建立驗算。</div>';
     return;
   }
   const audits = job.dimensionAudits || [];
@@ -532,7 +544,7 @@ function renderData() {
   ui.resetButton.disabled = job?.status !== 'done' || !hasModifications(job);
   ui.editButton.textContent = job?.editing ? '完成編輯' : '編輯資料';
   if (!job) { ui.dataView.innerHTML = ''; return; }
-  if (job.status === 'working' || job.status === 'queued') { ui.dataView.innerHTML = '<div class="loading-box"><span class="spinner"></span>正在讀取圖面…</div>'; return; }
+  if (job.status === 'working' || job.status === 'queued') { ui.dataView.innerHTML = progressMarkup(job); return; }
   if (job.status === 'error') { ui.dataView.innerHTML = `<div class="error-box"><strong>解析失敗</strong><p>${escapeHtml(job.error)}</p></div>`; return; }
   const rows = job.rows.map((row, index) => {
     const modified = new Set(row.modifiedFields || []);
@@ -612,14 +624,22 @@ function updateTotal() {
 function render() { activeIndex = Math.min(activeIndex, Math.max(0, jobs.length - 1)); renderTabs(); renderData(); renderChecks(); }
 
 async function processJob(job) {
-  job.status = 'working'; render(); let lastError;
+  job.status = 'working'; job.progress = { percent: 3, stage: 'read', label: '準備讀取 DWG', detail: job.file.name }; render(); let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let pointer; let engine;
     try {
-      const buffer = await job.file.arrayBuffer(); engine = await getEngine();
+      await updateJobProgress(job, 8, 'read', '讀取圖檔', job.file.name);
+      const buffer = await job.file.arrayBuffer();
+      await updateJobProgress(job, 18, 'decode', '載入 DWG 解析引擎', '大型圖檔可能需要較長時間');
+      engine = await getEngine();
+      await updateJobProgress(job, 28, 'decode', '解碼 DWG 內容', '正在轉換 CAD 物件');
       pointer = engine.dwg_read_data(buffer, Dwg_File_Type.DWG);
       if (!pointer) throw new Error('DWG 解析器回傳 null，檔案可能損壞或版本不相容');
-      const result = extractTables(engine.convert(pointer));
+      const database = engine.convert(pointer);
+      await updateJobProgress(job, 48, 'detect', '辨識表格、ITEM 與 Dimension', '正在排除打叉圖框與重建尺寸');
+      await updateJobProgress(job, 62, 'infer', '進行長度組合推演', '正在建立候選與全圖分配；複雜圖可能需要較長時間');
+      const result = extractTables(database);
+      await updateJobProgress(job, 94, 'finish', '整理解析結果', String(result.tables.length) + ' 個有效表格');
       const sourceIndex = jobs.indexOf(job); const stem = baseName(job.file.name);
       const parts = result.tables.map((table, index) => {
         const suffix = result.tables.length > 1 ? `_${String(index + 1).padStart(2, '0')}` : '';
@@ -641,7 +661,7 @@ async function processJob(job) {
 async function addFiles(fileList) {
   const files = [...fileList].filter((file) => file.name.toLowerCase().endsWith('.dwg'));
   if (!files.length) return;
-  const start = jobs.length; files.forEach((file) => jobs.push({ file, status: 'queued' })); activeIndex = start; render();
+  const start = jobs.length; files.forEach((file, index) => jobs.push({ file, status: 'queued', progress: { percent: 0, stage: 'queued', label: '等待處理', detail: '佇列中第 ' + (index + 1) + ' / ' + files.length + ' 個檔案' } })); activeIndex = start; render();
   processingPromise = processingPromise.then(async () => {
     let queued; while ((queued = jobs.find((entry) => entry.status === 'queued'))) await processJob(queued);
   });
