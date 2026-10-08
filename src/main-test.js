@@ -712,10 +712,13 @@ ui.dimensionView.addEventListener('keydown', (event) => {
   event.preventDefault(); event.stopPropagation(); event.target.value = ''; event.target.dispatchEvent(new Event('input', { bubbles: true }));
 });
 ui.dimensionView.addEventListener('wheel', (event) => {
-  const hasHorizontalOverflow = ui.dimensionView.scrollWidth > ui.dimensionView.clientWidth + 1;
+  const view = ui.dimensionView; const verticalMax = Math.max(0, view.scrollHeight - view.clientHeight);
+  const canContinueVertically = event.deltaY < 0 ? view.scrollTop > 1 : event.deltaY > 0 ? view.scrollTop < verticalMax - 1 : false;
+  if (canContinueVertically) return;
+  const hasHorizontalOverflow = view.scrollWidth > view.clientWidth + 1;
   if (!hasHorizontalOverflow || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-  const before = ui.dimensionView.scrollLeft; ui.dimensionView.scrollLeft += event.deltaY;
-  if (ui.dimensionView.scrollLeft !== before) event.preventDefault();
+  const before = view.scrollLeft; view.scrollLeft += event.deltaY;
+  if (view.scrollLeft !== before) event.preventDefault();
 }, { passive: false });
 ui.fileTabs.addEventListener('wheel', (event) => {
   const hasHorizontalOverflow = ui.fileTabs.scrollWidth > ui.fileTabs.clientWidth + 1;
